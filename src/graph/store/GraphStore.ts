@@ -13,4 +13,15 @@ export interface GraphStoreConfig {
   uri?: string;
   username?: string;
   password?: string;
+  namespace?: string;
+  maxConnectionPoolSize?: number;
+  connectionTimeoutMs?: number;
+  provisioning?: {
+    enabled?: boolean;
+    apiUrl?: string;
+    apiKey?: string;
+    retentionDays?: number;
+    databaseId?: string;
+    expiresAt?: string;
+  };
 }

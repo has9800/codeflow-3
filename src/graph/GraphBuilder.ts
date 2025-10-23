@@ -1,9 +1,12 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import type Parser from 'tree-sitter';
 import { CodeGraph, GraphNode } from './CodeGraph.js';
 import { TreeSitterParser } from '../parser/TreeSitterParser.js';
 import { SymbolExtractor, ExtractedSymbol } from '../parser/SymbolExtractor.js';
+import { languageRegistry } from '../parser/LanguageRegistry.js';
 import { QwenEmbedder } from '../embeddings/QwenEmbedder.js';
+import { EmbeddingCache } from '../embeddings/EmbeddingCache.js';
 
 interface Embedder {
   initialize(): Promise<void>;
@@ -20,16 +23,25 @@ class NoopEmbedder implements Embedder {
   }
 }
 
+interface GraphBuilderDeps {
+  parser?: TreeSitterParser;
+  extractor?: SymbolExtractor;
+  embedder?: Embedder;
+  cache?: EmbeddingCache;
+}
+
 export class GraphBuilder {
   private parser: TreeSitterParser;
   private extractor: SymbolExtractor;
   private embedder: Embedder;
   private embeddingsEnabled = true;
+  private embeddingCache: EmbeddingCache | null;
 
-  constructor(private rootDir: string) {
-    this.parser = new TreeSitterParser();
-    this.extractor = new SymbolExtractor();
-    this.embedder = new QwenEmbedder();
+  constructor(private rootDir: string, deps: GraphBuilderDeps = {}) {
+    this.parser = deps.parser ?? new TreeSitterParser();
+    this.extractor = deps.extractor ?? new SymbolExtractor();
+    this.embedder = deps.embedder ?? new QwenEmbedder();
+    this.embeddingCache = deps.cache ?? new EmbeddingCache(rootDir);
   }
 
   async build(): Promise<CodeGraph> {
@@ -51,10 +63,21 @@ export class GraphBuilder {
       }
     }
 
+    if (this.embeddingCache) {
+      await this.embeddingCache.prepare();
+      if (!this.embeddingsEnabled) {
+        this.embeddingCache.clear();
+      }
+    }
+
     const files = await this.findSourceFiles();
 
     for (const filePath of files) {
       await this.processFile(filePath, graph);
+    }
+
+    if (this.embeddingCache && this.embeddingsEnabled) {
+      await this.embeddingCache.flush();
     }
 
     return graph;
@@ -102,8 +125,7 @@ export class GraphBuilder {
   private async processFile(filePath: string, graph: CodeGraph): Promise<void> {
     const fullPath = path.join(this.rootDir, filePath);
     const content = await fs.readFile(fullPath, 'utf-8');
-    const ext = path.extname(filePath);
-    const language = this.getLanguage(ext);
+    const language = languageRegistry.inferFromPath(filePath);
 
     if (!language) return;
 
@@ -120,9 +142,18 @@ export class GraphBuilder {
       metadata: { language },
     });
 
-    const symbolNodes: GraphNode[] = [];
+    const symbolEntries: Array<{ symbol: ExtractedSymbol; node: GraphNode }> = [];
 
     for (const symbol of symbols) {
+      let embedding: number[] | undefined;
+      if (this.embeddingsEnabled) {
+        embedding = this.embeddingCache?.get(symbol.content);
+        if (!embedding) {
+          embedding = await this.embedder.embed(symbol.content);
+          this.embeddingCache?.set(symbol.content, embedding);
+        }
+      }
+
       const symbolNode = graph.addNode({
         type: symbol.type,
         name: symbol.name,
@@ -130,13 +161,15 @@ export class GraphBuilder {
         content: symbol.content,
         startLine: symbol.startLine,
         endLine: symbol.endLine,
-      embedding: this.embeddingsEnabled
-        ? await this.embedder.embed(symbol.content)
-        : undefined,
-        metadata: {},
+        embedding,
+        metadata: {
+          exported: symbol.exported ?? false,
+          language,
+          kind: symbol.kind ?? symbol.type,
+        },
       });
 
-      symbolNodes.push(symbolNode);
+      symbolEntries.push({ symbol, node: symbolNode });
 
       graph.addEdge({
         from: fileNode.id,
@@ -146,42 +179,132 @@ export class GraphBuilder {
       });
     }
 
-    this.analyzeCallsWithinFile(symbolNodes, graph, content, language);
+    this.analyzeCallsWithinFile(tree, symbolEntries, graph, language);
     await this.analyzeImports(symbols, fileNode, graph);
   }
 
-/**
- * Analyze function calls within the same file
- */
-private analyzeCallsWithinFile(
-  nodes: GraphNode[],
-  graph: CodeGraph,
-  fileContent: string,
-  language: string
-): void {
-  const functions = nodes.filter(n => n.type === 'function');
-  
-  for (const fn of functions) {
-    // Find function calls in this function's body
-    for (const otherFn of functions) {
-      if (fn.id === otherFn.id) continue;
-      
-      // Simple check: does function body contain other function name?
-      if (fn.content.includes(otherFn.name + '(')) {
-        graph.addEdge({
-          from: fn.id,
-          to: otherFn.id,
-          type: 'calls',
-          metadata: { scope: 'local' },
-        });
+  private analyzeCallsWithinFile(
+    tree: Parser.Tree,
+    symbols: Array<{ symbol: ExtractedSymbol; node: GraphNode }>,
+    graph: CodeGraph,
+    language: string
+  ): void {
+    const functionSymbols = symbols.filter(entry => entry.symbol.type === 'function');
+    if (functionSymbols.length === 0) {
+      return;
+    }
+
+    const symbolsByName = new Map<string, GraphNode[]>();
+    for (const entry of symbols) {
+      if (!symbolsByName.has(entry.symbol.name)) {
+        symbolsByName.set(entry.symbol.name, []);
+      }
+      symbolsByName.get(entry.symbol.name)!.push(entry.node);
+    }
+
+    const createdEdges = new Set<string>();
+
+    const visit = (node: Parser.SyntaxNode) => {
+      if (this.isCallExpression(node, language)) {
+        const calleeName = this.extractCalleeName(node, language);
+        if (calleeName) {
+          const targets = symbolsByName.get(calleeName) ?? [];
+          if (targets.length > 0) {
+            const caller = this.findEnclosingFunction(node, functionSymbols);
+            if (caller) {
+              for (const target of targets) {
+                if (target.id === caller.node.id) continue;
+                const key = `${caller.node.id}->${target.id}`;
+                if (createdEdges.has(key)) continue;
+                graph.addEdge({
+                  from: caller.node.id,
+                  to: target.id,
+                  type: 'calls',
+                  metadata: {
+                    scope: caller.node.path === target.path ? 'local' : 'cross-file',
+                  },
+                });
+                createdEdges.add(key);
+              }
+            }
+          }
+        }
+      }
+
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (child) visit(child);
+      }
+    };
+
+    visit(tree.rootNode);
+  }
+
+  private isCallExpression(node: Parser.SyntaxNode, language: string): boolean {
+    if (language === 'python') {
+      return node.type === 'call';
+    }
+    return node.type === 'call_expression';
+  }
+
+  private extractCalleeName(node: Parser.SyntaxNode, language: string): string | null {
+    const functionNode = node.childForFieldName('function') ?? node.child(0);
+    if (!functionNode) return null;
+
+    if (functionNode.type === 'identifier') {
+      return functionNode.text;
+    }
+
+    if (language === 'python' && functionNode.type === 'identifier') {
+      return functionNode.text;
+    }
+
+    if (
+      ['member_expression', 'subscript_expression', 'attribute'].includes(functionNode.type)
+    ) {
+      const property =
+        functionNode.childForFieldName('property') ??
+        functionNode.child(functionNode.childCount - 1);
+      return property?.type === 'property_identifier' || property?.type === 'identifier'
+        ? property.text
+        : null;
+    }
+
+    return null;
+  }
+
+  private findEnclosingFunction(
+    node: Parser.SyntaxNode,
+    candidates: Array<{ symbol: ExtractedSymbol; node: GraphNode }>
+  ): { symbol: ExtractedSymbol; node: GraphNode } | null {
+    const start = node.startIndex;
+    const end = node.endIndex;
+
+    let best: { symbol: ExtractedSymbol; node: GraphNode } | null = null;
+
+    for (const entry of candidates) {
+      if (
+        entry.symbol.startIndex <= start &&
+        entry.symbol.endIndex >= end
+      ) {
+        if (!best) {
+          best = entry;
+          continue;
+        }
+        const currentRange = entry.symbol.endIndex - entry.symbol.startIndex;
+        const bestRange = best.symbol.endIndex - best.symbol.startIndex;
+        if (currentRange < bestRange) {
+          best = entry;
+        }
       }
     }
-  }
-}
 
-/**
- * Analyze imports and create cross-file edges
- */
+    return best;
+  }
+
+  /**
+   * Analyze imports and create cross-file edges
+   */
   private async analyzeImports(
     symbols: ExtractedSymbol[],
     fileNode: GraphNode,
@@ -288,14 +411,4 @@ private extractImportedSymbols(importStatement: string): string[] {
     }
   }
 
-  private getLanguage(ext: string): string | null {
-    const map: Record<string, string> = {
-      '.ts': 'typescript',
-      '.tsx': 'tsx',
-      '.js': 'javascript',
-      '.jsx': 'jsx',
-      '.py': 'python',
-    };
-    return map[ext] || null;
-  }
 }

@@ -6,6 +6,7 @@ export interface DiffOperation {
   edgeId?: string;
   node?: GraphNode;
   edge?: GraphEdge;
+  metadata?: Record<string, unknown>;
   timestamp: number;
 }
 
@@ -26,6 +27,11 @@ export class DiffOverlay {
     
     if (op.node) {
       this.modifiedPaths.add(op.node.path);
+    }
+
+    const path = op.metadata?.path;
+    if (typeof path === 'string' && path.length > 0) {
+      this.modifiedPaths.add(path);
     }
   }
 

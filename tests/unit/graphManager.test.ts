@@ -19,7 +19,7 @@ function createGraphWithFile(path: string): CodeGraph {
 }
 
 describe('GraphManager', () => {
-  const store = new InMemoryGraphStore();
+  let store: InMemoryGraphStore;
   const rootDir = '/tmp/project';
   let firstGraph: CodeGraph;
   let secondGraph: CodeGraph;
@@ -27,6 +27,7 @@ describe('GraphManager', () => {
   let manager: GraphManager;
 
   beforeEach(() => {
+    store = new InMemoryGraphStore();
     firstGraph = createGraphWithFile('src/first.ts');
     secondGraph = createGraphWithFile('src/second.ts');
 
@@ -100,5 +101,17 @@ describe('GraphManager', () => {
     await manager.initialize();
     await manager.clearStore();
     await expect(manager.initialize()).resolves.toBeDefined();
+  });
+
+  it('records file modifications and merges overlay', async () => {
+    await manager.initialize(true);
+
+    manager.recordFileModification('src/first.ts');
+    expect(manager.hasPendingOverlay()).toBe(true);
+
+    await manager.mergeOverlay();
+
+    expect(manager.hasPendingOverlay()).toBe(false);
+    expect(builderMock.build).toHaveBeenCalledTimes(2);
   });
 });

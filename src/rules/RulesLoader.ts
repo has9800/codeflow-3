@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { RulesValidator } from './RulesValidator.js';
 
 export class RulesLoader {
   private ruleFiles = ['.codeflowrules', '.cursorrules', '.aicoderules'];
@@ -12,7 +13,7 @@ export class RulesLoader {
       
       try {
         const content = await fs.readFile(filePath, 'utf-8');
-        return content;
+        return RulesValidator.validate(content).raw;
       } catch {
         // File doesn't exist, try next
         continue;
