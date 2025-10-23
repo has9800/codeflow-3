@@ -12,9 +12,11 @@
     "build": "tsup src/index.tsx --format esm --dts --clean",
     "test": "vitest",
     "test:ci": "vitest run --coverage",
+    "test:neo4j": "vitest run tests/integration/neo4j-smoke.test.ts",
     "lint": "eslint src --ext .ts,.tsx",
     "format": "prettier --write 'src/**/*.{ts,tsx}'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "benchmark": "tsx scripts/benchmark.ts"
   },
   "dependencies": {
     "ink": "4.4.1",
@@ -35,6 +37,7 @@
     "execa": "^8.0.1",
     "zod": "^3.22.4",
     "nanoid": "^5.0.4",
+    "neo4j-driver": "^5.20.0",
     "p-queue": "^8.0.1"
   },
   "devDependencies": {

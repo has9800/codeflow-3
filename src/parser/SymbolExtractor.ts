@@ -7,6 +7,10 @@ export interface ExtractedSymbol {
   content: string;
   startLine: number;
   endLine: number;
+  startIndex: number;
+  endIndex: number;
+  exported: boolean;
+  kind?: string;
 }
 
 export class SymbolExtractor {
@@ -67,12 +71,23 @@ export class SymbolExtractor {
     const nameNode = node.childForFieldName('name');
     const name = nameNode?.text || 'anonymous';
 
+    const kind =
+      node.type === 'method_definition'
+        ? 'method'
+        : node.type === 'arrow_function'
+        ? 'arrow_function'
+        : node.type;
+
     return {
       type: 'function',
       name,
       content: node.text,
       startLine: node.startPosition.row + 1,
       endLine: node.endPosition.row + 1,
+      startIndex: node.startIndex,
+      endIndex: node.endIndex,
+      exported: this.isExported(node),
+      kind,
     };
   }
 
@@ -86,6 +101,10 @@ export class SymbolExtractor {
       content: node.text,
       startLine: node.startPosition.row + 1,
       endLine: node.endPosition.row + 1,
+      startIndex: node.startIndex,
+      endIndex: node.endIndex,
+      exported: this.isExported(node),
+      kind: node.type,
     };
   }
 
@@ -96,6 +115,24 @@ export class SymbolExtractor {
       content: node.text,
       startLine: node.startPosition.row + 1,
       endLine: node.endPosition.row + 1,
+      startIndex: node.startIndex,
+      endIndex: node.endIndex,
+      exported: false,
+      kind: node.type,
     };
+  }
+
+  private isExported(node: Parser.SyntaxNode): boolean {
+    let current: Parser.SyntaxNode | null = node;
+    while (current) {
+      if (current.type === 'export_statement' || current.type === 'export_clause') {
+        return true;
+      }
+      if (current.type === 'program' || current.type === 'module') {
+        break;
+      }
+      current = current.parent;
+    }
+    return false;
   }
 }

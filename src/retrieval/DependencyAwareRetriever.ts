@@ -24,17 +24,33 @@ interface ScoredNode {
   score: number;
 }
 
+interface Embedder {
+  initialize(): Promise<void>;
+  embed(text: string): Promise<number[]>;
+}
+
+class NoopEmbedder implements Embedder {
+  async initialize(): Promise<void> {
+    // Intentionally empty
+  }
+
+  async embed(_text: string): Promise<number[]> {
+    return [];
+  }
+}
+
 export class DependencyAwareRetriever {
   private walker: GraphWalker;
-  private embedder: QwenEmbedder;
+  private embedder: Embedder;
   private textSearch: TextSearchEngine;
   private tokenCounter: TokenCounter;
+  private embeddingsEnabled = true;
 
   constructor(
     private graph: CodeGraph,
     deps?: {
       walker?: GraphWalker;
-      embedder?: QwenEmbedder;
+      embedder?: Embedder;
       textSearch?: TextSearchEngine;
       tokenCounter?: TokenCounter;
     }
@@ -46,7 +62,22 @@ export class DependencyAwareRetriever {
   }
 
   async initialize(): Promise<void> {
-    await this.embedder.initialize();
+    if (process.env.CODEFLOW_DISABLE_EMBEDDINGS === '1') {
+      this.embedder = new NoopEmbedder();
+      this.embeddingsEnabled = false;
+      return;
+    }
+
+    try {
+      await this.embedder.initialize();
+    } catch (error) {
+      console.warn(
+        'Embeddings disabled:',
+        error instanceof Error ? error.message : String(error)
+      );
+      this.embedder = new NoopEmbedder();
+      this.embeddingsEnabled = false;
+    }
   }
 
   /**
@@ -165,7 +196,7 @@ export class DependencyAwareRetriever {
         node,
         score: this.scoreNodeRelevance(node, queryLower, mentionedIdentifiers),
       }))
-      .filter(s => s.score > 0)
+      .filter(s => s.score > 1)
       .sort((a, b) => b.score - a.score);
     
     // Return top matches or all if none scored
@@ -310,6 +341,10 @@ export class DependencyAwareRetriever {
     excludeNodes: GraphNode[],
     topK: number
   ): Promise<GraphNode[]> {
+    if (!this.embeddingsEnabled) {
+      return [];
+    }
+
     const excludeIds = new Set(excludeNodes.map(n => n.id));
     const allNodes = this.graph
       .getAllNodes()
@@ -326,11 +361,15 @@ export class DependencyAwareRetriever {
       queryEmbedding,
       topK
     );
-    
-    // If low confidence, use hybrid with text search
-    if (embeddingResults.scores[0] < 0.6) {
+
+    let semanticNodes: GraphNode[] = embeddingResults.nodes;
+
+    if (semanticNodes.length === 0) {
       const textResults = this.textSearch.search(query, allNodes, topK);
-      return this.mergeSearchResults(
+      semanticNodes = textResults.nodes;
+    } else if (embeddingResults.scores[0] < 0.6) {
+      const textResults = this.textSearch.search(query, allNodes, topK);
+      semanticNodes = this.mergeSearchResults(
         embeddingResults.nodes,
         embeddingResults.scores,
         textResults.nodes,
@@ -338,8 +377,20 @@ export class DependencyAwareRetriever {
         topK
       );
     }
-    
-    return embeddingResults.nodes;
+
+    const primaryLimit = Math.max(1, Math.ceil(topK * 0.6));
+    const primary = semanticNodes.slice(0, primaryLimit);
+    const expanded = this.expandGraphContext(primary, topK - primary.length);
+    const merged = [...primary, ...expanded];
+
+    const unique = new Map<string, GraphNode>();
+    for (const node of merged) {
+      if (!unique.has(node.id)) {
+        unique.set(node.id, node);
+      }
+    }
+
+    return Array.from(unique.values()).slice(0, topK);
   }
 
   private async rankByEmbedding(
@@ -347,6 +398,10 @@ export class DependencyAwareRetriever {
     queryEmbedding: number[],
     topK: number
   ): Promise<{ nodes: GraphNode[]; scores: number[] }> {
+    if (!this.embeddingsEnabled) {
+      return { nodes: [], scores: [] };
+    }
+
     const scored: ScoredNode[] = [];
     
     for (const node of nodes) {
@@ -417,6 +472,52 @@ export class DependencyAwareRetriever {
     return sorted.map(([id]) => allNodes.get(id)!);
   }
 
+  private expandGraphContext(baseNodes: GraphNode[], maxAdditional: number): GraphNode[] {
+    if (maxAdditional <= 0) {
+      return [];
+    }
+
+    const additions: GraphNode[] = [];
+    const visited = new Set<string>(baseNodes.map(node => node.id));
+
+    const tryAdd = (candidate: GraphNode | undefined) => {
+      if (!candidate) return;
+      if (visited.has(candidate.id)) return;
+      visited.add(candidate.id);
+      additions.push(candidate);
+    };
+
+    for (const node of baseNodes) {
+      if (additions.length >= maxAdditional) break;
+
+      const siblings = this.graph
+        .getNodesByPath(node.path)
+        .filter(sibling => sibling.id !== node.id && (sibling.metadata as Record<string, unknown> | undefined)?.exported === true);
+      for (const sibling of siblings) {
+        tryAdd(sibling);
+        if (additions.length >= maxAdditional) break;
+      }
+
+      const outgoing = this.graph.getOutgoingEdges(node.id);
+      for (const edge of outgoing) {
+        if (['calls', 'imports', 'references', 'contains'].includes(edge.type)) {
+          const target = this.graph.getNode(edge.to);
+          tryAdd(target);
+        }
+        if (additions.length >= maxAdditional) break;
+      }
+
+      const dependents = this.walkBackward(node.id, 1, ['calls', 'imports', 'references']);
+      for (const dependent of dependents) {
+        if (dependent.id === node.id) continue;
+        tryAdd(dependent);
+        if (additions.length >= maxAdditional) break;
+      }
+    }
+
+    return additions.slice(0, maxAdditional);
+  }
+
   /**
    * Deduplicate nodes and tag with categories
    */
@@ -453,14 +554,36 @@ export class DependencyAwareRetriever {
     });
     
     // Remove overlaps from related
+    const relatedSet = new Map<string, GraphNode>();
     const cleanRelated = related.filter(n => {
       if (targetIds.has(n.id) || forwardIds.has(n.id) || backwardIds.has(n.id)) {
         return false;
       }
       n.metadata.category = 'related';
+      relatedSet.set(n.id, n);
       return true;
     });
-    
+
+    for (const node of target) {
+      const siblings = this.graph
+        .getNodesByPath(node.path)
+        .filter(sibling => {
+          if (sibling.id === node.id) return false;
+          if (targetIds.has(sibling.id) || forwardIds.has(sibling.id) || backwardIds.has(sibling.id)) {
+            return false;
+          }
+          return sibling.type !== 'file';
+        });
+
+      for (const sibling of siblings) {
+        if (!relatedSet.has(sibling.id)) {
+          sibling.metadata.category = 'related';
+          relatedSet.set(sibling.id, sibling);
+          cleanRelated.push(sibling);
+        }
+      }
+    }
+
     return {
       target,
       forward: cleanForward,

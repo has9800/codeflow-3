@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import type { Key } from 'ink';
 import { Box, Text, useApp, useInput } from 'ink';
 import { Header } from './components/Header.js';
@@ -6,21 +6,23 @@ import { MessageList } from './components/MessageList.js';
 import { FileDiffReview } from './components/FileDiffReview.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusIndicator } from './components/StatusIndicator.js';
+import { WelcomeHero } from './components/WelcomeHero.js';
 import {
   DependencyAwareRetriever,
   type DependencyContext,
 } from '../retrieval/DependencyAwareRetriever.js';
 import { TargetResolver } from '../retrieval/TargetResolver.js';
 import { QwenEmbedder } from '../embeddings/QwenEmbedder.js';
-import {
-  OpenRouterClient,
-  type ChatRequest,
-  type ChatChunk,
-} from '../llm/OpenRouterClient.js';
+import { OpenRouterClient } from '../llm/OpenRouterClient.js';
+import type { ChatRequest, ChatChunk } from '../llm/OpenRouterClient.js';
+import { PromptBuilder } from '../llm/PromptBuilder.js';
+import { ResponseParser } from '../llm/ResponseParser.js';
+import { StreamHandler } from '../llm/StreamHandler.js';
 import { FileApplier, type FileEdit } from '../files/FileApplier.js';
 import { parseFileEdits } from '../files/EditParser.js';
 import { RulesLoader } from '../rules/RulesLoader.js';
 import { CodeGraph, type GraphNode } from '../graph/CodeGraph.js';
+import { GraphManager } from '../graph/GraphManager.js';
 import { UsageTracker } from '../analytics/UsageTracker.js';
 
 type ConversationRole = 'user' | 'assistant' | 'system';
@@ -34,7 +36,9 @@ export interface Message {
 
 export interface AppProps {
   graph: CodeGraph;
+  graphManager: GraphManager;
   apiKey: string;
+  accountLabel?: string;
   model: string;
   workingDir: string;
   offline?: boolean;
@@ -74,7 +78,7 @@ class OfflineClient implements ChatClient {
   }
 }
 
-export function App({ graph, apiKey, model, workingDir, offline = false }: AppProps) {
+export function App({ graph, graphManager, apiKey, accountLabel, model, workingDir, offline = false }: AppProps) {
   const { exit } = useApp();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -86,13 +90,19 @@ export function App({ graph, apiKey, model, workingDir, offline = false }: AppPr
   const [tokensUsed, setTokensUsed] = useState(0);
   const [status, setStatus] = useState('Ready');
   const [interruptMode, setInterruptMode] = useState(false);
+  const [graphState, setGraphState] = useState<CodeGraph>(graph);
+  const accountLabelState = accountLabel ?? '';
+
+  useEffect(() => {
+    setGraphState(graph);
+  }, [graph]);
 
   const embedder = useMemo(() => new QwenEmbedder(), []);
   const retriever = useMemo(
-    () => new DependencyAwareRetriever(graph, { embedder }),
-    [graph, embedder]
+    () => new DependencyAwareRetriever(graphState, { embedder }),
+    [graphState, embedder]
   );
-  const resolver = useMemo(() => new TargetResolver(graph, embedder), [graph, embedder]);
+  const resolver = useMemo(() => new TargetResolver(graphState, embedder), [graphState, embedder]);
   const client = useMemo<ChatClient>(
     () => (offline ? new OfflineClient() : new OpenRouterClient(apiKey)),
     [offline, apiKey]
@@ -100,6 +110,9 @@ export function App({ graph, apiKey, model, workingDir, offline = false }: AppPr
   const fileApplier = useMemo(() => new FileApplier(workingDir), [workingDir]);
   const rulesLoader = useMemo(() => new RulesLoader(workingDir), [workingDir]);
   const tracker = useMemo(() => new UsageTracker(), []);
+  const promptBuilder = useMemo(() => new PromptBuilder(), []);
+  const responseParser = useMemo(() => new ResponseParser(), []);
+  const streamHandler = useMemo(() => new StreamHandler(), []);
 
   useEffect(() => {
     retriever.initialize().catch(error => {
@@ -155,6 +168,29 @@ export function App({ graph, apiKey, model, workingDir, offline = false }: AppPr
     return true;
   };
 
+  const finalizeOverlay = useCallback(
+    async (reason?: string) => {
+      if (!graphManager.hasPendingOverlay()) {
+        return;
+      }
+
+      if (reason) {
+        setStatus(reason);
+      }
+
+      try {
+        const updatedGraph = await graphManager.mergeOverlay();
+        setGraphState(updatedGraph);
+        setStatus('Graph updated with latest edits');
+      } catch (error) {
+        setStatus(
+          `Failed to update graph: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    },
+    [graphManager]
+  );
+
   const handleSubmit = async (query: string) => {
     const trimmed = query.trim();
     if (!trimmed || streaming) return;
@@ -170,6 +206,8 @@ export function App({ graph, apiKey, model, workingDir, offline = false }: AppPr
       content: query,
       timestamp: Date.now(),
     };
+
+    const conversationHistory = [...messages, userMessage];
 
     setMessages(prev => [...prev, userMessage]);
     setInput('');
@@ -220,20 +258,25 @@ export function App({ graph, apiKey, model, workingDir, offline = false }: AppPr
       setTokensSaved(prev => prev + retrievalResult.tokensSaved);
       setTokensUsed(prev => prev + retrievalResult.tokensUsed);
 
-      const systemMessage = {
-        role: 'system' as const,
-        content: rules,
-        cache_control: { type: 'ephemeral' as const },
-      };
+      const priorMessagesForModel = conversationHistory.map(({ role, content }) => ({
+        role,
+        content,
+      }));
 
-      const contextMessage = {
-        role: 'user' as const,
-        content: `${formatDependencyContext(retrievalResult)}\n\n${trimmed}`,
-      };
+      const llmMessages = promptBuilder.build({
+        userMessage: trimmed,
+        dependencyContext: formatDependencyContext(retrievalResult),
+        rules,
+        conversation: priorMessagesForModel,
+        metadata: {
+          targetFile: targetPath,
+          model,
+        },
+      });
 
       const stream = await client.chat({
         model,
-        messages: [systemMessage, contextMessage],
+        messages: llmMessages,
         stream: true,
       });
 
@@ -248,32 +291,36 @@ export function App({ graph, apiKey, model, workingDir, offline = false }: AppPr
       setMessages(prev => [...prev, assistantMessage]);
       setStatus('Waiting for model...');
 
-      for await (const chunk of stream) {
-        if (chunk.choices[0]?.delta?.content) {
-          assistantContent += chunk.choices[0].delta.content;
+      let usageSnapshot = { total: 0, prompt: 0, completion: 0 };
+
+      const finalContent = await streamHandler.consume(stream, {
+        onToken: (token) => {
+          assistantContent += token;
           setMessages(prev =>
             prev.map(message =>
               message.id === assistantMessage.id ? { ...message, content: assistantContent } : message
             )
           );
-        }
+        },
+        onUsage: (usage) => {
+          usageSnapshot = usage;
+          if (usage.total > 0) {
+            setTokensUsed(prev => prev + usage.total);
+          }
+        },
+      });
 
-        const totalTokensUsed = chunk.usage?.total_tokens;
-        if (typeof totalTokensUsed === 'number') {
-          setTokensUsed(prev => prev + totalTokensUsed);
-        }
-      }
-
-      const edits = parseFileEdits(assistantContent);
+      const parsedResponse = responseParser.parse(finalContent);
+      const edits = parseFileEdits(parsedResponse.raw);
       if (edits.length > 0) {
         setPendingEdits(edits);
         setStatus(`${edits.length} file changes proposed`);
       } else {
-        setStatus('Ready');
+        setStatus(parsedResponse.summary || 'Ready');
       }
 
       await tracker.track({
-        tokensUsed: retrievalResult.tokensUsed,
+        tokensUsed: usageSnapshot.total || retrievalResult.tokensUsed,
         tokensSaved: retrievalResult.tokensSaved,
         model,
         searchType: retrievalResult.searchType,
@@ -298,8 +345,14 @@ export function App({ graph, apiKey, model, workingDir, offline = false }: AppPr
     const result = await fileApplier.apply(edit);
 
     if (result.success) {
-      setPendingEdits(prev => prev.filter(e => e.path !== edit.path));
+      graphManager.recordFileModification(edit.path);
+      const nextPending = pendingEdits.filter(e => e.path !== edit.path);
+      setPendingEdits(nextPending);
       setStatus(result.syntaxValid ? 'Changes applied' : 'Applied with syntax warnings');
+
+      if (nextPending.length === 0) {
+        await finalizeOverlay('Applying graph updates...');
+      }
     } else {
       setStatus(`Failed to apply: ${result.error}`);
     }
@@ -309,6 +362,7 @@ export function App({ graph, apiKey, model, workingDir, offline = false }: AppPr
     for (const edit of pendingEdits) {
       await handleApplyEdit(edit);
     }
+    await finalizeOverlay('Rebuilding graph after applying all changes...');
   };
 
   const handleSkipEdit = (edit: FileEdit) => {
@@ -318,12 +372,21 @@ export function App({ graph, apiKey, model, workingDir, offline = false }: AppPr
 
   const savingsPercent = tokensUsed > 0 ? Math.round((tokensSaved / (tokensUsed + tokensSaved)) * 100) : 0;
 
+  const showWelcome = messages.length === 0 && !streaming;
+
   return (
     <Box flexDirection="column" height="100%">
-      <Header model={model} tokensSaved={tokensSaved} savingsPercent={savingsPercent} status={status} />
-
-      <Box flexGrow={1} flexDirection="column" paddingX={1} paddingY={1}>
-        <MessageList messages={messages} streaming={streaming} />
+      <Box flexGrow={1} flexDirection="column" paddingX={1} paddingY={0}>
+        {showWelcome ? (
+          <WelcomeHero model={model} accountLabel={accountLabelState} offline={offline} />
+        ) : (
+          <MessageList
+            messages={messages}
+            streaming={streaming}
+            assistantLabel={offline ? 'Assistant (offline)' : model}
+            maxVisibleMessages={120}
+          />
+        )}
       </Box>
 
       {pendingEdits.length > 0 && (
@@ -339,15 +402,25 @@ export function App({ graph, apiKey, model, workingDir, offline = false }: AppPr
         </Box>
       )}
 
-      <InputBar
-        value={input}
-        onChange={setInput}
-        onSubmit={handleSubmit}
-        disabled={streaming && !interruptMode}
-        placeholder={streaming ? 'Press ESC to interrupt...' : 'What would you like to do?'}
-      />
-
       {streaming && <StatusIndicator text={status} />}
+      <Box flexDirection="column" paddingX={1} paddingY={0} borderStyle="single" borderColor="gray">
+        <InputBar
+          value={input}
+          onChange={setInput}
+          onSubmit={handleSubmit}
+          disabled={streaming && !interruptMode}
+          placeholder={streaming ? 'Press ESC to interrupt...' : 'What would you like to do?'}
+        />
+        <Header
+          model={model}
+          tokensSaved={tokensSaved}
+          savingsPercent={savingsPercent}
+          status={status}
+          accountLabel={accountLabelState}
+          offline={offline}
+          variant="footer"
+        />
+      </Box>
     </Box>
   );
 }

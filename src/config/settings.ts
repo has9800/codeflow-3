@@ -4,6 +4,8 @@ import type { GraphStoreConfig } from '../graph/store/GraphStore.js';
 
 interface Config {
   apiKey?: string;
+  encryptedApiKey?: string;
+  accountLabel?: string;
   defaultModel: string;
   autoTest: boolean;
   reviewMode: 'all' | 'each' | 'auto';
@@ -26,6 +28,8 @@ export async function loadConfig(): Promise<Config> {
   const storedGraphStore = config.get('graphStore');
   return {
     apiKey: config.get('apiKey'),
+    encryptedApiKey: config.get('encryptedApiKey'),
+    accountLabel: config.get('accountLabel'),
     defaultModel: config.get('defaultModel'),
     autoTest: config.get('autoTest'),
     reviewMode: config.get('reviewMode'),
@@ -36,7 +40,16 @@ export async function loadConfig(): Promise<Config> {
 export async function initConfig(updates?: Partial<Config>): Promise<void> {
   if (updates) {
     for (const [key, value] of Object.entries(updates)) {
-      config.set(key as keyof Config, value);
+      if (value === undefined) {
+        const store = config as unknown as { delete?: (key: keyof Config) => void };
+        if (typeof store.delete === 'function') {
+          store.delete(key as keyof Config);
+        } else {
+          config.set(key as keyof Config, value as Config[keyof Config]);
+        }
+      } else {
+        config.set(key as keyof Config, value as Config[keyof Config]);
+      }
     }
   }
 }

@@ -40,7 +40,7 @@ function parseReplaceEdits(content: string): FileEdit[] {
 
   while ((match = FILE_BLOCK.exec(content)) !== null) {
     const [, rawPath, body] = match;
-    const cleanedBody = body.replace(/\r?\n$/, '');
+    const cleanedBody = body.replace(/\s+$/, '');
 
     edits.push({
       type: 'replace',
