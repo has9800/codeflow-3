@@ -17,7 +17,7 @@ export class BenchmarkRunner {
     const results: TaskBenchmarkResult[] = [];
 
     for (const task of dataset.tasks) {
-      const { context, evaluation, iterations, actionsTaken } = await this.pipeline.run({
+      const { context, resolution, evaluation, iterations, actionsTaken } = await this.pipeline.run({
         query: task.query,
         targetFilePath: task.targetFilePath,
         candidateFilePaths: task.candidateFilePaths,
@@ -29,19 +29,30 @@ export class BenchmarkRunner {
       }
 
       const metrics = evaluation.metrics;
+      const topCandidatePaths = new Set(resolution.candidates.map(candidate => candidate.path));
+      const contextPaths = new Set<string>();
+      if (context) {
+        contextPaths.add(context.primaryFilePath);
+        context.candidateFilePaths.forEach(path => contextPaths.add(path));
+      }
+      const hits = task.groundTruth.filter(path => topCandidatePaths.has(path) || contextPaths.has(path)).length;
+      const denominator = Math.max(1, topCandidatePaths.size || task.groundTruth.length || 1);
+      const precisionAtK = hits / denominator;
+      const recallAtK = task.groundTruth.length === 0 ? 1 : hits / task.groundTruth.length;
+      const f1 = precisionAtK + recallAtK === 0 ? 0 : (2 * precisionAtK * recallAtK) / (precisionAtK + recallAtK);
       const taskMetrics = {
-        precisionAtK: metrics.precisionAtK,
-        recallAtK: metrics.recallAtK,
-        f1: metrics.f1,
+        precisionAtK,
+        recallAtK,
+        f1,
         coverage: metrics.coverage,
-        candidateCount: metrics.candidateCount,
+        candidateCount: resolution.candidates.length,
         entropy: context ? entropy(context.formattedContext) : 0,
         snr: context ? signalToNoise(context.formattedContext, context.telemetry.tokens.saved) : 0,
-        relevanceScore: evaluation?.metrics.precisionAtK ?? 0,
-        answerAccuracy: metrics.precisionAtK,
-        exactMatch: evaluation?.metrics.precisionAtK === 1 ? 1 : 0,
+        relevanceScore: precisionAtK,
+        answerAccuracy: precisionAtK,
+        exactMatch: hits === task.groundTruth.length ? 1 : 0,
         perplexity: 0,
-        faithfulness: metrics.recallAtK,
+        faithfulness: recallAtK,
         timeToFirstTokenMs: 0,
       };
 

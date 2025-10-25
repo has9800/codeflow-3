@@ -14,7 +14,8 @@ const DEFAULT_DATASET_PATH = path.resolve(
 export async function loadDataset(datasetPath?: string): Promise<BenchmarkDataset> {
   const resolved = datasetPath ? path.resolve(datasetPath) : DEFAULT_DATASET_PATH;
   const raw = await readFile(resolved, 'utf-8');
-  const data = JSON.parse(raw) as BenchmarkDataset;
+  const sanitized = raw.replace(/^\uFEFF/, '');
+  const data = JSON.parse(sanitized) as BenchmarkDataset;
   validateDataset(data, resolved);
   return data;
 }
