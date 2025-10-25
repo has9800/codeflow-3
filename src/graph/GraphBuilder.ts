@@ -47,6 +47,8 @@ const IGNORED_DIRECTORIES = new Set([
   '.next',
   'coverage',
   '.codeflow',
+  'benchmarks',
+  'docs',
 ]);
 
 export class GraphBuilder {
@@ -115,6 +117,9 @@ export class GraphBuilder {
 
     const language = languageRegistry.inferFromPath(filePath);
     if (!language) {
+      return null;
+    }
+    if (language === 'json' || language === 'markdown') {
       return null;
     }
 

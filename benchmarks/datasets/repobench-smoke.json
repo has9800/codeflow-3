@@ -1,0 +1,32 @@
+{
+  "name": "RepoBench Smoke",
+  "family": "repobench",
+  "variant": "smoke",
+  "description": "Minimal RepoBench sample covering auth/login workflow",
+  "tasks": [
+    {
+      "id": "repobench-auth-001",
+      "query": "Refactor authentication service to improve error handling",
+      "targetFilePath": "src/auth.ts",
+      "candidateFilePaths": ["src/auth.ts", "src/login.ts"],
+      "groundTruth": ["src/auth.ts", "src/login.ts"],
+      "tags": ["auth", "refactor"],
+      "metadata": {
+        "source": "RepoBench",
+        "difficulty": "easy"
+      }
+    },
+    {
+      "id": "repobench-ui-002",
+      "query": "Audit login UI for missing validation",
+      "targetFilePath": "src/ui.ts",
+      "candidateFilePaths": ["src/ui.ts", "src/login.ts"],
+      "groundTruth": ["src/ui.ts"],
+      "tags": ["ui", "validation"],
+      "metadata": {
+        "source": "RepoBench",
+        "difficulty": "easy"
+      }
+    }
+  ]
+}

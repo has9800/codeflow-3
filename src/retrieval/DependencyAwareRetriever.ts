@@ -21,7 +21,15 @@ export interface ContextTelemetry {
   };
 }
 
-export interface BuildContextOptions {\n  candidateFilePaths?: string[];\n  walkDepth?: number;\n  relatedLimit?: number;\n  breadthLimit?: number;\n}\n\nexport interface DependencyContext {
+export interface BuildContextOptions {
+  candidateFilePaths?: string[];
+  walkDepth?: number;
+  relatedLimit?: number;
+  breadthLimit?: number;
+}
+
+
+export interface DependencyContext {
   targetNodes: GraphNode[];
   forwardDeps: GraphNode[];
   backwardDeps: GraphNode[];
@@ -109,13 +117,17 @@ export class DependencyAwareRetriever {
     query: string,
     targetFilePath?: string,
     maxTokens: number = 6000,
-    options?: { candidateFilePaths?: string[] }
+    options?: BuildContextOptions
   ): Promise<DependencyContext> {
     const tokenBudget = this.clampTokenBudget(maxTokens);
     const fallbackPaths = [
       ...(options?.candidateFilePaths ?? []),
       ...(targetFilePath ? [targetFilePath] : []),
     ].filter((path): path is string => Boolean(path));
+
+    const walkDepth = options?.walkDepth ?? 2;
+    const relatedLimit = options?.relatedLimit ?? 5;
+    const breadthLimit = options?.breadthLimit ?? 3;
 
     const resolution = await this.targetResolver.resolve(query, {
       recentPaths: fallbackPaths,
@@ -157,10 +169,10 @@ export class DependencyAwareRetriever {
     }
 
     // 2. Get forward dependencies (what target depends on)
-    const forwardDeps = this.getForwardDependencies(targetNodes, 2);
+    const forwardDeps = this.getForwardDependencies(targetNodes, walkDepth, breadthLimit);
 
     // 3. Get backward dependencies (who depends on target)
-    const backwardDeps = this.getBackwardDependencies(targetNodes, 2);
+    const backwardDeps = this.getBackwardDependencies(targetNodes, walkDepth, breadthLimit);
 
     // 4. Get semantic context from query and seeded candidates
     const allExistingNodes = [
@@ -171,7 +183,7 @@ export class DependencyAwareRetriever {
     const semanticRelated = await this.getSemanticContext(
       query,
       allExistingNodes,
-      5
+      relatedLimit
     );
     const seededRelated = resolution.candidates
       .slice(1)
@@ -185,7 +197,8 @@ export class DependencyAwareRetriever {
       targetNodes,
       forwardDeps,
       backwardDeps,
-      relatedByQuery
+      relatedByQuery,
+      breadthLimit
     );
     
     // 6. Prioritize and build within token budget
@@ -319,7 +332,8 @@ export class DependencyAwareRetriever {
    */
   private getForwardDependencies(
     nodes: GraphNode[],
-    maxDepth: number
+    maxDepth: number,
+    breadthLimit: number
   ): GraphNode[] {
     const allDeps: GraphNode[] = [];
     
@@ -335,7 +349,7 @@ export class DependencyAwareRetriever {
     }
 
     const unique = this.dedupeNodes(allDeps);
-    return this.limitByBreadth(unique, 3);
+    return this.limitByBreadth(unique, Math.max(1, breadthLimit));
   }
 
   /**
@@ -344,7 +358,8 @@ export class DependencyAwareRetriever {
    */
   private getBackwardDependencies(
     nodes: GraphNode[],
-    maxDepth: number
+    maxDepth: number,
+    breadthLimit: number
   ): GraphNode[] {
     const allDependents: GraphNode[] = [];
     
@@ -360,7 +375,7 @@ export class DependencyAwareRetriever {
     }
     
     const unique = this.dedupeNodes(allDependents);
-    return this.limitByBreadth(unique, 3);
+    return this.limitByBreadth(unique, Math.max(1, breadthLimit));
   }
 
   /**
@@ -600,7 +615,8 @@ export class DependencyAwareRetriever {
     target: GraphNode[],
     forward: GraphNode[],
     backward: GraphNode[],
-    related: GraphNode[]
+    related: GraphNode[],
+    breadthLimit: number
   ): {
     target: GraphNode[];
     forward: GraphNode[];
@@ -662,9 +678,9 @@ export class DependencyAwareRetriever {
       }
     }
 
-    const limitedForward = this.limitByBreadth(cleanForward, 3);
-    const limitedBackward = this.limitByBreadth(cleanBackward, 3);
-    const limitedRelated = this.limitByBreadth(cleanRelated, 3);
+    const limitedForward = this.limitByBreadth(cleanForward, Math.max(1, breadthLimit));
+    const limitedBackward = this.limitByBreadth(cleanBackward, Math.max(1, breadthLimit));
+    const limitedRelated = this.limitByBreadth(cleanRelated, Math.max(1, breadthLimit));
 
     return {
       target: uniqueTarget,
@@ -832,6 +848,11 @@ ${node.content}
     return this.tokenCounter.count(content) * 3; // Multiply by 3 for typical full-context overhead
   }
 }
+
+
+
+
+
 
 
 

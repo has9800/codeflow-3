@@ -16,7 +16,8 @@
     "lint": "eslint src --ext .ts,.tsx",
     "format": "prettier --write 'src/**/*.{ts,tsx}'",
     "typecheck": "tsc --noEmit",
-    "benchmark": "tsx scripts/benchmark.ts"
+    "benchmark": "tsx scripts/benchmark.ts",
+    "test:langgraph": "vitest run tests/integration/langgraph-pipeline.test.ts"
   },
   "dependencies": {
     "ink": "4.4.1",
