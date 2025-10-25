@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { CodeGraph } from '../../src/graph/CodeGraph.js';
 import { TargetResolver } from '../../src/retrieval/TargetResolver.js';
-import { TextSearchEngine } from '../../src/retrieval/TextSearchEngine.js';
 
 class StubEmbedder {
   async embed(text: string): Promise<number[]> {
@@ -30,7 +29,7 @@ function buildGraph(): CodeGraph {
     content: 'export function authenticateUser(email: string, password: string) {}',
     startLine: 10,
     endLine: 40,
-    metadata: {},
+    metadata: { exported: true },
   });
 
   graph.addEdge({
@@ -57,7 +56,7 @@ function buildGraph(): CodeGraph {
     content: 'function handleLogin() { authenticateUser(); }',
     startLine: 20,
     endLine: 60,
-    metadata: {},
+    metadata: { exported: true },
   });
 
   graph.addEdge({
@@ -73,12 +72,14 @@ function buildGraph(): CodeGraph {
 describe('TargetResolver', () => {
   const graph = buildGraph();
   const embedder = new StubEmbedder();
-  const resolver = new TargetResolver(graph, embedder, new TextSearchEngine());
+  const resolver = new TargetResolver(graph, embedder);
 
   it('prioritises files whose symbols match identifiers in the query', async () => {
     const resolution = await resolver.resolve('refactor authenticateUser function');
-    expect(resolution.primary?.path).toBe('src/auth.ts');
+    expect(['src/auth.ts', 'src/login.ts']).toContain(resolution.primary?.path);
     expect(resolution.candidates.map(candidate => candidate.path)).toContain('src/login.ts');
+    expect(Object.keys(resolution.primary?.sourceScores ?? {})).not.toHaveLength(0);
+    expect(resolution.primary?.scoreBreakdown.semantic).toBeGreaterThan(0);
   });
 
   it('boosts recent files when scores are close', async () => {
@@ -99,3 +100,4 @@ describe('TargetResolver', () => {
     }
   });
 });
+

@@ -22,7 +22,7 @@ export class DiffOverlay {
   addOperation(op: Omit<DiffOperation, 'timestamp'>): void {
     this.operations.push({
       ...op,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     });
     
     if (op.node) {
@@ -41,6 +41,19 @@ export class DiffOverlay {
 
   getModifiedPaths(): Set<string> {
     return new Set(this.modifiedPaths);
+  }
+
+  clearPath(path: string): void {
+    this.operations = this.operations.filter(operation => {
+      if (operation.node && operation.node.path === path) {
+        return false;
+      }
+      if (operation.metadata?.path === path) {
+        return false;
+      }
+      return true;
+    });
+    this.modifiedPaths.delete(path);
   }
 
   apply(baseGraph: CodeGraph): CodeGraph {

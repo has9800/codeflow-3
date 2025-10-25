@@ -169,9 +169,12 @@ describe('Dependency-Aware Retrieval', () => {
     // Should include the target
     expect(context.targetNodes.length).toBeGreaterThan(0);
     expect(context.targetNodes[0].name).toBe('authenticateUser');
-    
+
     // Should include callers (backward deps)
     expect(context.backwardDeps.length).toBeGreaterThan(0);
+    expect(context.backwardDeps.length).toBeLessThanOrEqual(3);
+    expect(context.forwardDeps.length).toBeLessThanOrEqual(3);
+    expect(context.relatedByQuery.length).toBeLessThanOrEqual(3);
     const callerNames = context.backwardDeps.map(n => n.name);
     expect(callerNames).toContain('handleLogin');
   });
@@ -182,10 +185,22 @@ describe('Dependency-Aware Retrieval', () => {
       'src/auth.ts',
       6000
     );
-    
+
     expect(context.tokensSaved).toBeGreaterThanOrEqual(0);
     expect(context.savingsPercent).toBeGreaterThanOrEqual(0);
     expect(context.savingsPercent).toBeLessThan(100);
+    expect(context.telemetry.tokens.budget).toBe(6000);
+  });
+
+  it('clamps token budgets to the supported window', async () => {
+    const context = await retriever.buildContextForChange(
+      'tight budget test',
+      'src/auth.ts',
+      4000
+    );
+
+    expect(context.telemetry.tokens.budget).toBe(6000);
+    expect(context.totalTokens).toBeLessThanOrEqual(context.telemetry.tokens.budget);
   });
 
   it('should format context with clear sections', async () => {
@@ -209,5 +224,34 @@ describe('Dependency-Aware Retrieval', () => {
 
     const relatedNames = context.relatedByQuery.map(node => node.name);
     expect(relatedNames).toContain('logoutUser');
+  });
+
+  it('emits telemetry snapshot for downstream metrics', async () => {
+    const context = await retriever.buildContextForChange(
+      'refine authenticateUser flow',
+      'src/auth.ts',
+      9000
+    );
+
+    expect(context.telemetry).toMatchInlineSnapshot(`
+      {
+        "targetResolution": {
+          "aggregateSourceScores": {
+            "BM25": 1.4040645531203197,
+          },
+          "candidateCount": 2,
+          "primaryPath": "src/auth.ts",
+          "sourceScores": {
+            "BM25": 0.6230536454471418,
+          },
+        },
+        "tokens": {
+          "budget": 9000,
+          "saved": 0,
+          "savingsPercent": 0,
+          "used": 173,
+        },
+      }
+    `);
   });
 });

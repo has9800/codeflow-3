@@ -345,7 +345,8 @@ export function App({ graph, graphManager, apiKey, accountLabel, model, workingD
     const result = await fileApplier.apply(edit);
 
     if (result.success) {
-      graphManager.recordFileModification(edit.path);
+      const updatedGraph = await graphManager.recordFileModification(edit.path);
+      setGraphState(updatedGraph);
       const nextPending = pendingEdits.filter(e => e.path !== edit.path);
       setPendingEdits(nextPending);
       setStatus(result.syntaxValid ? 'Changes applied' : 'Applied with syntax warnings');
