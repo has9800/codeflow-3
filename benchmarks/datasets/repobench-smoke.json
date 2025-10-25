@@ -1,32 +1,38 @@
-{
+﻿{
   "name": "RepoBench Smoke",
   "family": "repobench",
   "variant": "smoke",
-  "description": "Minimal RepoBench sample covering auth/login workflow",
+  "description": "Minimal RepoBench sample for this repository (auth + UI flows)",
   "tasks": [
     {
       "id": "repobench-auth-001",
       "query": "Refactor authentication service to improve error handling",
-      "targetFilePath": "src/auth.ts",
-      "candidateFilePaths": ["src/auth.ts", "src/login.ts"],
-      "groundTruth": ["src/auth.ts", "src/login.ts"],
+      "targetFilePath": "src/auth/DeviceCodeFlow.ts",
+      "candidateFilePaths": [
+        "src/auth/DeviceCodeFlow.ts",
+        "src/auth/AuthManager.ts",
+        "src/auth/ApiKeyStore.ts"
+      ],
+      "groundTruth": [
+        "src/auth/DeviceCodeFlow.ts",
+        "src/auth/AuthManager.ts"
+      ],
       "tags": ["auth", "refactor"],
-      "metadata": {
-        "source": "RepoBench",
-        "difficulty": "easy"
-      }
+      "metadata": {"source": "RepoBench", "difficulty": "easy"}
     },
     {
       "id": "repobench-ui-002",
       "query": "Audit login UI for missing validation",
-      "targetFilePath": "src/ui.ts",
-      "candidateFilePaths": ["src/ui.ts", "src/login.ts"],
-      "groundTruth": ["src/ui.ts"],
+      "targetFilePath": "src/ui/app.tsx",
+      "candidateFilePaths": [
+        "src/ui/app.tsx",
+        "src/ui/components/MessageList.tsx"
+      ],
+      "groundTruth": [
+        "src/ui/app.tsx"
+      ],
       "tags": ["ui", "validation"],
-      "metadata": {
-        "source": "RepoBench",
-        "difficulty": "easy"
-      }
+      "metadata": {"source": "RepoBench", "difficulty": "easy"}
     }
   ]
 }
