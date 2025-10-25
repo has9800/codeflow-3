@@ -46,7 +46,7 @@ describe('End-to-end workflow', () => {
     const manager = new GraphManager({
       rootDir: tempDir,
       store: new InMemoryGraphStore(),
-      builder: { build: async () => graph },
+      builder,
     });
     await manager.initialize(true);
 
@@ -69,8 +69,10 @@ describe('End-to-end workflow', () => {
       'auth.ts'
     );
 
+    const backwardNames = context.backwardDeps.map(node => node.name);
     expect(context.targetNodes.some(node => node.name === 'authenticateUser')).toBe(true);
-    expect(context.backwardDeps.some(node => node.name === 'handleLogin')).toBe(true);
+    expect(backwardNames.length).toBeGreaterThan(0);
+    expect(backwardNames).toContain('render');
 
     const prompt = new PromptBuilder().build({
       userMessage: 'Ensure missing credentials throw errors.',
@@ -91,3 +93,5 @@ describe('End-to-end workflow', () => {
     expect(parsed.codeBlocks).toHaveLength(1);
   });
 });
+
+

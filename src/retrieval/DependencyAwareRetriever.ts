@@ -3,6 +3,31 @@ import { GraphWalker } from '../graph/GraphWalker.js';
 import { QwenEmbedder } from '../embeddings/QwenEmbedder.js';
 import { TextSearchEngine } from './TextSearchEngine.js';
 import { TokenCounter } from './TokenCounter.js';
+import { TargetResolver } from './TargetResolver.js';
+import type { CandidateSourceScores, TargetCandidate } from './TargetResolver.js';
+
+export interface ContextTelemetry {
+  targetResolution: {
+    primaryPath?: string;
+    candidateCount: number;
+    sourceScores: CandidateSourceScores;
+    aggregateSourceScores: CandidateSourceScores;
+  };
+  tokens: {
+    budget: number;
+    used: number;
+    saved: number;
+    savingsPercent: number;
+  };
+}
+
+export interface BuildContextOptions {
+  candidateFilePaths?: string[];
+  walkDepth?: number;
+  relatedLimit?: number;
+  breadthLimit?: number;
+}
+
 
 export interface DependencyContext {
   targetNodes: GraphNode[];
@@ -17,6 +42,7 @@ export interface DependencyContext {
   searchType: 'dependency-aware';
   primaryFilePath: string;
   candidateFilePaths: string[];
+  telemetry: ContextTelemetry;
 }
 
 interface ScoredNode {
@@ -45,6 +71,7 @@ export class DependencyAwareRetriever {
   private textSearch: TextSearchEngine;
   private tokenCounter: TokenCounter;
   private embeddingsEnabled = true;
+  private targetResolver: TargetResolver;
 
   constructor(
     private graph: CodeGraph,
@@ -59,6 +86,7 @@ export class DependencyAwareRetriever {
     this.embedder = deps?.embedder ?? new QwenEmbedder();
     this.textSearch = deps?.textSearch ?? new TextSearchEngine();
     this.tokenCounter = deps?.tokenCounter ?? new TokenCounter();
+    this.targetResolver = new TargetResolver(graph, this.embedder);
   }
 
   async initialize(): Promise<void> {
@@ -78,6 +106,8 @@ export class DependencyAwareRetriever {
       this.embedder = new NoopEmbedder();
       this.embeddingsEnabled = false;
     }
+
+    this.targetResolver = new TargetResolver(this.graph, this.embedder);
   }
 
   /**
@@ -87,52 +117,88 @@ export class DependencyAwareRetriever {
     query: string,
     targetFilePath?: string,
     maxTokens: number = 6000,
-    options?: { candidateFilePaths?: string[] }
+    options?: BuildContextOptions
   ): Promise<DependencyContext> {
-    const inferredFile =
-      targetFilePath ??
-      options?.candidateFilePaths?.[0];
+    const tokenBudget = this.clampTokenBudget(maxTokens);
+    const fallbackPaths = [
+      ...(options?.candidateFilePaths ?? []),
+      ...(targetFilePath ? [targetFilePath] : []),
+    ].filter((path): path is string => Boolean(path));
 
-    if (!inferredFile) {
+    const walkDepth = options?.walkDepth ?? 2;
+    const relatedLimit = options?.relatedLimit ?? 5;
+    const breadthLimit = options?.breadthLimit ?? 3;
+
+    const resolution = await this.targetResolver.resolve(query, {
+      recentPaths: fallbackPaths,
+      limit: 5,
+    });
+
+    const primaryFilePath = resolution.primary?.path ?? fallbackPaths[0];
+
+    if (!primaryFilePath) {
       throw new Error('Unable to determine target file for this request.');
     }
 
-    const filePath = inferredFile;
     const candidatePaths = Array.from(
-      new Set(
-        options?.candidateFilePaths?.length
-          ? options.candidateFilePaths
-          : [filePath]
-      )
+      new Set([
+        primaryFilePath,
+        ...fallbackPaths,
+        ...resolution.candidates.map(candidate => candidate.path),
+      ])
     );
     
     // 1. Identify target nodes (what's being modified)
-    const targetNodes = await this.identifyTargetNodes(query, filePath);
-    
+    let targetNodes: GraphNode[] = [];
+    if (resolution.primary?.nodes?.length) {
+      targetNodes = resolution.primary.nodes
+        .map(node => this.graph.getNode(node.id))
+        .filter((node): node is GraphNode => Boolean(node));
+    }
+
+    if (targetNodes.length === 0) {
+      targetNodes = await this.identifyTargetNodes(query, primaryFilePath);
+    }
+
+    if (targetNodes.length === 0) {
+      const fileNodes = this.graph.getNodesByPath(primaryFilePath);
+      targetNodes = fileNodes.filter(node => node.type !== 'file');
+      if (targetNodes.length === 0 && fileNodes.length > 0) {
+        targetNodes = [fileNodes[0]];
+      }
+    }
+
     // 2. Get forward dependencies (what target depends on)
-    const forwardDeps = this.getForwardDependencies(targetNodes, 2);
-    
-    // 3. Get backward dependencies (who depends on target) - CRITICAL
-    const backwardDeps = this.getBackwardDependencies(targetNodes, 2);
-    
-    // 4. Get semantic context from query
+    const forwardDeps = this.getForwardDependencies(targetNodes, walkDepth, breadthLimit);
+
+    // 3. Get backward dependencies (who depends on target)
+    const backwardDeps = this.getBackwardDependencies(targetNodes, walkDepth, breadthLimit);
+
+    // 4. Get semantic context from query and seeded candidates
     const allExistingNodes = [
       ...targetNodes,
       ...forwardDeps,
       ...backwardDeps,
     ];
-    const relatedByQuery = await this.getSemanticContext(
+    const semanticRelated = await this.getSemanticContext(
       query,
       allExistingNodes,
-      5
+      relatedLimit
     );
+    const seededRelated = resolution.candidates
+      .slice(1)
+      .flatMap(candidate => candidate.nodes)
+      .map(node => this.graph.getNode(node.id))
+      .filter((node): node is GraphNode => Boolean(node));
+    const relatedByQuery = [...semanticRelated, ...seededRelated];
     
     // 5. Deduplicate and tag nodes with categories
     const deduped = this.deduplicateAndTag(
       targetNodes,
       forwardDeps,
       backwardDeps,
-      relatedByQuery
+      relatedByQuery,
+      breadthLimit
     );
     
     // 6. Prioritize and build within token budget
@@ -141,7 +207,7 @@ export class DependencyAwareRetriever {
       deduped.forward,
       deduped.backward,
       deduped.related,
-      maxTokens
+      tokenBudget
     );
     
     // 7. Format context for model
@@ -149,11 +215,26 @@ export class DependencyAwareRetriever {
     const totalTokens = this.tokenCounter.count(formattedContext);
     
     // 8. Calculate savings
-    const fullContextTokens = this.estimateFullContext(filePath);
+    const fullContextTokens = this.estimateFullContext(primaryFilePath);
     const tokensSaved = Math.max(0, fullContextTokens - totalTokens);
     const savingsPercent = fullContextTokens > 0
       ? (tokensSaved / fullContextTokens) * 100
       : 0;
+
+    const telemetry: ContextTelemetry = {
+      targetResolution: {
+        primaryPath: resolution.primary?.path,
+        candidateCount: resolution.candidates.length,
+        sourceScores: resolution.primary?.sourceScores ?? {},
+        aggregateSourceScores: this.combineSourceScores(resolution.candidates),
+      },
+      tokens: {
+        budget: tokenBudget,
+        used: totalTokens,
+        saved: tokensSaved,
+        savingsPercent,
+      },
+    };
     
     return {
       targetNodes: finalContext.target,
@@ -166,8 +247,9 @@ export class DependencyAwareRetriever {
       tokensSaved,
       savingsPercent,
       searchType: 'dependency-aware',
-      primaryFilePath: filePath,
+      primaryFilePath: primaryFilePath,
       candidateFilePaths: candidatePaths,
+      telemetry,
     };
   }
 
@@ -250,7 +332,8 @@ export class DependencyAwareRetriever {
    */
   private getForwardDependencies(
     nodes: GraphNode[],
-    maxDepth: number
+    maxDepth: number,
+    breadthLimit: number
   ): GraphNode[] {
     const allDeps: GraphNode[] = [];
     
@@ -260,10 +343,13 @@ export class DependencyAwareRetriever {
         'calls',
         'references',
       ]);
-      allDeps.push(...deps);
+      allDeps.push(
+        ...deps.filter(dep => dep.id !== node.id && dep.type !== 'file')
+      );
     }
-    
-    return allDeps;
+
+    const unique = this.dedupeNodes(allDeps);
+    return this.limitByBreadth(unique, Math.max(1, breadthLimit));
   }
 
   /**
@@ -272,7 +358,8 @@ export class DependencyAwareRetriever {
    */
   private getBackwardDependencies(
     nodes: GraphNode[],
-    maxDepth: number
+    maxDepth: number,
+    breadthLimit: number
   ): GraphNode[] {
     const allDependents: GraphNode[] = [];
     
@@ -282,10 +369,13 @@ export class DependencyAwareRetriever {
         'calls',
         'references',
       ]);
-      allDependents.push(...dependents);
+      allDependents.push(
+        ...dependents.filter(dep => dep.id !== node.id && dep.type !== 'file')
+      );
     }
     
-    return allDependents;
+    const unique = this.dedupeNodes(allDependents);
+    return this.limitByBreadth(unique, Math.max(1, breadthLimit));
   }
 
   /**
@@ -507,7 +597,7 @@ export class DependencyAwareRetriever {
         if (additions.length >= maxAdditional) break;
       }
 
-      const dependents = this.walkBackward(node.id, 1, ['calls', 'imports', 'references']);
+      const dependents = this.walkBackward(node.id, 1, ['calls', 'imports', 'references', 'contains']);
       for (const dependent of dependents) {
         if (dependent.id === node.id) continue;
         tryAdd(dependent);
@@ -525,38 +615,42 @@ export class DependencyAwareRetriever {
     target: GraphNode[],
     forward: GraphNode[],
     backward: GraphNode[],
-    related: GraphNode[]
+    related: GraphNode[],
+    breadthLimit: number
   ): {
     target: GraphNode[];
     forward: GraphNode[];
     backward: GraphNode[];
     related: GraphNode[];
   } {
-    const targetIds = new Set(target.map(n => n.id));
-    const forwardIds = new Set(forward.map(n => n.id));
-    const backwardIds = new Set(backward.map(n => n.id));
-    
-    // Tag nodes with their categories
-    target.forEach(n => n.metadata.category = 'target');
-    
-    // Remove overlaps from forward deps
-    const cleanForward = forward.filter(n => {
+    const uniqueTarget = this.dedupeNodes(target);
+    const uniqueForward = this.dedupeNodes(forward);
+    const uniqueBackward = this.dedupeNodes(backward);
+    const uniqueRelated = this.dedupeNodes(related);
+
+    const targetIds = new Set(uniqueTarget.map(n => n.id));
+    const forwardIds = new Set(uniqueForward.map(n => n.id));
+    const backwardIds = new Set(uniqueBackward.map(n => n.id));
+
+    uniqueTarget.forEach(n => (n.metadata.category = 'target'));
+
+    const cleanForward = uniqueForward.filter(n => {
       if (targetIds.has(n.id)) return false;
       n.metadata.category = 'forward';
       return true;
     });
-    
-    // Remove overlaps from backward deps
-    const cleanBackward = backward.filter(n => {
-      if (targetIds.has(n.id) || forwardIds.has(n.id)) return false;
+    const cleanForwardIds = new Set(cleanForward.map(n => n.id));
+
+    const cleanBackward = uniqueBackward.filter(n => {
+      if (targetIds.has(n.id) || cleanForwardIds.has(n.id)) return false;
       n.metadata.category = 'backward';
       return true;
     });
-    
-    // Remove overlaps from related
+    const cleanBackwardIds = new Set(cleanBackward.map(n => n.id));
+
     const relatedSet = new Map<string, GraphNode>();
-    const cleanRelated = related.filter(n => {
-      if (targetIds.has(n.id) || forwardIds.has(n.id) || backwardIds.has(n.id)) {
+    const cleanRelated = uniqueRelated.filter(n => {
+      if (targetIds.has(n.id) || cleanForwardIds.has(n.id) || cleanBackwardIds.has(n.id)) {
         return false;
       }
       n.metadata.category = 'related';
@@ -564,12 +658,12 @@ export class DependencyAwareRetriever {
       return true;
     });
 
-    for (const node of target) {
+    for (const node of uniqueTarget) {
       const siblings = this.graph
         .getNodesByPath(node.path)
         .filter(sibling => {
           if (sibling.id === node.id) return false;
-          if (targetIds.has(sibling.id) || forwardIds.has(sibling.id) || backwardIds.has(sibling.id)) {
+          if (targetIds.has(sibling.id) || cleanForwardIds.has(sibling.id) || cleanBackwardIds.has(sibling.id)) {
             return false;
           }
           return sibling.type !== 'file';
@@ -584,11 +678,15 @@ export class DependencyAwareRetriever {
       }
     }
 
+    const limitedForward = this.limitByBreadth(cleanForward, Math.max(1, breadthLimit));
+    const limitedBackward = this.limitByBreadth(cleanBackward, Math.max(1, breadthLimit));
+    const limitedRelated = this.limitByBreadth(cleanRelated, Math.max(1, breadthLimit));
+
     return {
-      target,
-      forward: cleanForward,
-      backward: cleanBackward,
-      related: cleanRelated,
+      target: uniqueTarget,
+      forward: limitedForward,
+      backward: limitedBackward,
+      related: limitedRelated,
     };
   }
 
@@ -647,6 +745,54 @@ export class DependencyAwareRetriever {
     return result;
   }
 
+  private combineSourceScores(candidates: TargetCandidate[]): CandidateSourceScores {
+    const totals: CandidateSourceScores = {};
+    for (const candidate of candidates) {
+      for (const source of Object.keys(candidate.sourceScores) as Array<keyof CandidateSourceScores>) {
+        const value = candidate.sourceScores[source];
+        if (value === undefined) {
+          continue;
+        }
+        totals[source] = (totals[source] ?? 0) + value;
+      }
+    }
+    return totals;
+  }
+
+  private clampTokenBudget(maxTokens: number): number {
+    const clamped = Math.min(12000, Math.max(6000, Math.floor(maxTokens)));
+    return Number.isFinite(clamped) ? clamped : 6000;
+  }
+
+  private dedupeNodes(nodes: GraphNode[]): GraphNode[] {
+    const seen = new Set<string>();
+    const result: GraphNode[] = [];
+    for (const node of nodes) {
+      if (!seen.has(node.id)) {
+        seen.add(node.id);
+        result.push(node);
+      }
+    }
+    return result;
+  }
+
+  private limitByBreadth(nodes: GraphNode[], limit: number): GraphNode[] {
+    if (nodes.length <= limit) {
+      return nodes;
+    }
+    const scored = nodes
+      .map(node => ({ node, score: this.dependencyPriority(node) }))
+      .sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit).map(entry => entry.node);
+  }
+
+  private dependencyPriority(node: GraphNode): number {
+    const exported = node.metadata?.exported === true ? 1 : 0;
+    const length = Math.max(node.endLine - node.startLine + 1, 1);
+    const locality = 1 / Math.log(length + 1);
+    return exported * 2 + locality;
+  }
+
   /**
    * Format context for the model with clear sections
    */
@@ -702,3 +848,16 @@ ${node.content}
     return this.tokenCounter.count(content) * 3; // Multiply by 3 for typical full-context overhead
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+

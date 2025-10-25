@@ -1,10 +1,22 @@
-import { CodeGraph, GraphNode } from '../graph/CodeGraph.js';
-import { TextSearchEngine } from './TextSearchEngine.js';
+import { CodeGraph, type GraphNode } from '../graph/CodeGraph.js';
+import { logger } from '../utils/logger.js';
+import { HnswAnnIndex, type AnnResult } from './AnnIndex.js';
+import { Bm25Index, type Bm25Hit } from './Bm25Index.js';
+import { reciprocalRankFusion, type CandidateSource } from './CandidateFusion.js';
+import { HybridReranker, type RerankResult } from './HybridReranker.js';
+import type { CrossEncoder } from './CrossEncoder.js';
+import { TransformersCrossEncoder } from './CrossEncoder.js';
 
-interface CandidateScore {
-  node: GraphNode;
-  score: number;
-  reasons: string[];
+type FusedSeed = ReturnType<typeof reciprocalRankFusion>[number];
+
+export type CandidateSourceScores = Partial<Record<CandidateSource, number>>;
+
+export interface CandidateScoreBreakdown {
+  fused: number;
+  semantic: number;
+  lexical: number;
+  structural: number;
+  cross?: number;
 }
 
 export interface TargetCandidate {
@@ -12,6 +24,8 @@ export interface TargetCandidate {
   score: number;
   nodes: GraphNode[];
   reasons: string[];
+  sourceScores: CandidateSourceScores;
+  scoreBreakdown: CandidateScoreBreakdown;
 }
 
 export interface TargetResolution {
@@ -22,6 +36,12 @@ export interface TargetResolution {
 export interface TargetResolverOptions {
   recentPaths?: string[];
   limit?: number;
+  seedCount?: number;
+}
+
+export interface TargetResolverConfig {
+  reranker?: HybridReranker;
+  crossEncoder?: CrossEncoder;
 }
 
 export interface EmbeddingProvider {
@@ -29,14 +49,20 @@ export interface EmbeddingProvider {
 }
 
 export class TargetResolver {
-  private textSearch: TextSearchEngine;
+  private readonly annIndex = new HnswAnnIndex();
+  private readonly bm25Index = new Bm25Index();
+  private readonly nodeIndex = new Map<string, GraphNode>();
+  private readonly crossEncoder?: CrossEncoder;
+  private readonly reranker: HybridReranker;
 
   constructor(
-    private graph: CodeGraph,
-    private embedder: EmbeddingProvider,
-    textSearch?: TextSearchEngine
+    private readonly graph: CodeGraph,
+    private readonly embedder: EmbeddingProvider,
+    config: TargetResolverConfig = {}
   ) {
-    this.textSearch = textSearch ?? new TextSearchEngine();
+    this.crossEncoder = config.crossEncoder ?? this.initCrossEncoder();
+    this.reranker = config.reranker ?? new HybridReranker({ crossEncoder: this.crossEncoder });
+    this.buildIndexes();
   }
 
   async resolve(
@@ -44,174 +70,211 @@ export class TargetResolver {
     options?: TargetResolverOptions
   ): Promise<TargetResolution> {
     const limit = options?.limit ?? 3;
-    const candidates = new Map<string, CandidateScore>();
+    const seedCount = Math.max(options?.seedCount ?? limit * 3, limit);
 
-    const allNodes = this.graph.getAllNodes();
-    const symbolNodes = allNodes.filter(node => node.type !== 'file');
+    const annResults = await this.searchAnn(query, seedCount);
+    const lexicalResults = this.searchBm25(query, seedCount);
 
-    if (symbolNodes.length === 0) {
+    if (annResults.length === 0 && lexicalResults.length === 0) {
       return { candidates: [] };
     }
 
-    const identifiers = this.extractIdentifiers(query);
-    const queryLower = query.toLowerCase();
+    const fusedSeeds = reciprocalRankFusion(annResults, lexicalResults, seedCount);
+    const fusedMap = new Map(fusedSeeds.map(seed => [seed.id, seed]));
 
-    // Identifier / name matches
-    for (const node of symbolNodes) {
-      const nameLower = node.name.toLowerCase();
-      const entry = this.ensureCandidate(candidates, node);
+    const rerankInputs = fusedSeeds
+      .map(seed => ({ candidate: seed, node: this.nodeIndex.get(seed.id) }))
+      .filter(
+        (entry): entry is { candidate: (typeof fusedSeeds)[number]; node: GraphNode } =>
+          Boolean(entry.node)
+      );
 
-      if (identifiers.has(nameLower)) {
-        entry.score += 8;
-        this.addReason(entry, `Identifier match: ${node.name}`);
-      } else if (queryLower.includes(nameLower)) {
-        entry.score += 4;
-        this.addReason(entry, `Name mentioned: ${node.name}`);
-      }
+    if (rerankInputs.length === 0) {
+      return { candidates: [] };
     }
 
-    // Text search scoring (BM25)
-    const textResults = this.textSearch.search(query, symbolNodes, 25);
-    textResults.nodes.forEach((node, idx) => {
-      const score = textResults.scores[idx];
-      if (score <= 0) {
-        return;
-      }
+    const reranked = await this.reranker.rerank(query, rerankInputs, seedCount);
+    const grouped = this.groupByPath(reranked, fusedMap);
+    this.applyRecentBoost(grouped, options?.recentPaths ?? []);
 
-      const entry = this.ensureCandidate(candidates, node);
-      entry.score += score * 6;
-      this.addReason(entry, `Text similarity score ${score.toFixed(2)}`);
-    });
-
-    // Embedding similarity for top textual matches
-    const embeddingTargets = Array.from(
-      new Set(
-        textResults.nodes
-          .slice(0, 20)
-          .concat(
-            Array.from(candidates.values())
-              .sort((a, b) => b.score - a.score)
-              .slice(0, 20)
-              .map(entry => entry.node)
-          )
-      )
-    );
-
-    if (embeddingTargets.length > 0) {
-      const queryEmbedding = await this.embedder.embed(query);
-
-      for (const node of embeddingTargets) {
-        if (!node.embedding) {
-          node.embedding = await this.embedder.embed(node.content);
-        }
-
-        const similarity = this.cosineSimilarity(queryEmbedding, node.embedding);
-        if (similarity <= 0) continue;
-
-      const entry = this.ensureCandidate(candidates, node);
-      entry.score += similarity * 10;
-      this.addReason(entry, `Semantic similarity ${similarity.toFixed(2)}`);
-    }
-  }
-
-    // Recent file boost
-    if (options?.recentPaths?.length) {
-      for (const entry of candidates.values()) {
-        if (options.recentPaths.includes(entry.node.path)) {
-          entry.score += 2;
-          this.addReason(entry, 'Recent file preference');
-        }
-      }
-    }
-
-    // Aggregate by file path
-    const fileScores = new Map<string, TargetCandidate>();
-    for (const entry of candidates.values()) {
-      const existing = fileScores.get(entry.node.path);
-      if (existing) {
-        existing.score += entry.score;
-        existing.nodes.push(entry.node);
-        existing.reasons.push(...entry.reasons);
-      } else {
-        fileScores.set(entry.node.path, {
-          path: entry.node.path,
-          score: entry.score,
-          nodes: [entry.node],
-          reasons: [...entry.reasons],
-        });
-      }
-    }
-
-    // Fallback: search file nodes directly if we still have nothing
-    if (fileScores.size === 0) {
-      const fileNodes = allNodes.filter(node => node.type === 'file');
-      const fileResults = this.textSearch.search(query, fileNodes, limit);
-
-      fileResults.nodes.forEach((node, idx) => {
-        const score = fileResults.scores[idx];
-        if (score <= 0) return;
-
-       fileScores.set(node.path, {
-         path: node.path,
-         score,
-         nodes: [node],
-         reasons: [`File text similarity ${score.toFixed(2)}`],
-       });
-      });
-    }
-
-    const ranked = Array.from(fileScores.values())
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
+    grouped.sort((a, b) => b.score - a.score);
+    const final = grouped
       .map(candidate => ({
         ...candidate,
-        reasons: Array.from(new Set(candidate.reasons)).slice(0, 5),
-      }));
+        reasons: Array.from(new Set(candidate.reasons)).slice(0, 6),
+      }))
+      .slice(0, limit);
 
     return {
-      primary: ranked[0],
-      candidates: ranked,
+      primary: final[0],
+      candidates: final,
     };
   }
 
-  private ensureCandidate(
-    map: Map<string, CandidateScore>,
-    node: GraphNode
-  ): CandidateScore {
-    let entry = map.get(node.id);
-    if (!entry) {
-      entry = { node, score: 0, reasons: [] };
-      map.set(node.id, entry);
-    }
-    return entry;
-  }
+  private initCrossEncoder(): CrossEncoder | undefined {
+    const enableFlag = process.env.CODEFLOW_ENABLE_CROSS_ENCODER === '1';
+    const modelId = process.env.CODEFLOW_CROSS_ENCODER_MODEL;
 
-  private addReason(entry: CandidateScore, reason: string): void {
-    if (!entry.reasons.includes(reason)) {
-      entry.reasons.push(reason);
-    }
-  }
-
-  private extractIdentifiers(query: string): Set<string> {
-    const matches = query.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) ?? [];
-    return new Set(matches.map(match => match.toLowerCase()));
-  }
-
-  private cosineSimilarity(a: number[], b: number[]): number {
-    if (a.length !== b.length) return 0;
-
-    let dot = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
+    if (!enableFlag && !modelId) {
+      return undefined;
     }
 
-    const denom = Math.sqrt(normA) * Math.sqrt(normB);
-    return denom === 0 ? 0 : dot / denom;
+    try {
+      return new TransformersCrossEncoder({
+        model: modelId,
+        cacheDir: process.env.CODEFLOW_MODEL_CACHE,
+      });
+    } catch (error) {
+      logger.warn(
+        'Failed to initialise cross-encoder',
+        error instanceof Error ? error.message : String(error)
+      );
+      return undefined;
+    }
+  }
+
+  private buildIndexes(): void {
+    for (const node of this.graph.getAllNodes()) {
+      this.nodeIndex.set(node.id, node);
+
+      if (node.embedding && node.embedding.length > 0) {
+        try {
+          this.annIndex.add(node.id, node.embedding);
+        } catch {
+          // Ignore vectors that fail validation; ANN search will fall back to lexical results.
+        }
+      }
+
+      if (node.content.trim().length > 0) {
+        this.bm25Index.addDocument(node.id, node.content);
+      }
+    }
+  }
+
+  private async searchAnn(query: string, topK: number): Promise<AnnResult[]> {
+    const stats = this.annIndex.stats();
+    if (stats.vectors === 0) {
+      return [];
+    }
+
+    try {
+      const embedding = await this.embedder.embed(query);
+      if (stats.dimension > 0 && embedding.length !== stats.dimension) {
+        return [];
+      }
+      return this.annIndex.search(embedding, topK);
+    } catch {
+      return [];
+    }
+  }
+
+  private searchBm25(query: string, topK: number): Bm25Hit[] {
+    return this.bm25Index.search(query, topK);
+  }
+
+  private groupByPath(
+    reranked: RerankResult[],
+    fusedMap: Map<string, FusedSeed>
+  ): TargetCandidate[] {
+    const grouped = new Map<string, TargetCandidate>();
+
+    for (const result of reranked) {
+      const node = this.nodeIndex.get(result.id);
+      if (!node) continue;
+      const fused = fusedMap.get(result.id);
+
+      const entry = grouped.get(node.path) ?? this.createCandidate(node.path);
+
+      entry.score += result.score;
+      entry.nodes.push(node);
+      entry.reasons.push(...this.describeSignal(node, result, fused));
+      entry.scoreBreakdown.fused += fused?.fusedScore ?? 0;
+      entry.scoreBreakdown.semantic += result.semanticScore;
+      entry.scoreBreakdown.lexical += result.lexicalScore;
+      entry.scoreBreakdown.structural += result.structuralScore;
+      if (this.crossEncoder && entry.scoreBreakdown.cross !== undefined) {
+        entry.scoreBreakdown.cross += result.crossScore ?? 0;
+      }
+
+      if (fused) {
+        for (const [source, value] of fused.sources.entries()) {
+          entry.sourceScores[source] = (entry.sourceScores[source] ?? 0) + value;
+        }
+      }
+
+      grouped.set(node.path, entry);
+    }
+
+    return Array.from(grouped.values());
+  }
+
+  private createCandidate(path: string): TargetCandidate {
+    const breakdown: CandidateScoreBreakdown = {
+      fused: 0,
+      semantic: 0,
+      lexical: 0,
+      structural: 0,
+    };
+
+    if (this.crossEncoder) {
+      breakdown.cross = 0;
+    }
+
+    return {
+      path,
+      score: 0,
+      nodes: [],
+      reasons: [],
+      sourceScores: {},
+      scoreBreakdown: breakdown,
+    };
+  }
+
+  private describeSignal(
+    node: GraphNode,
+    scores: RerankResult,
+    fused: FusedSeed | undefined
+  ): string[] {
+    const reasons: string[] = [];
+
+    if (fused) {
+      const annSeed = fused.sources.get('ANN');
+      const bm25Seed = fused.sources.get('BM25');
+      if (annSeed !== undefined) {
+        reasons.push(`Semantic seed ${annSeed.toFixed(2)}`);
+      }
+      if (bm25Seed !== undefined) {
+        reasons.push(`Lexical seed ${bm25Seed.toFixed(2)}`);
+      }
+      reasons.push(`Fused seed ${fused.fusedScore.toFixed(2)}`);
+    }
+
+    reasons.push(`Semantic rerank ${scores.semanticScore.toFixed(2)}`);
+    reasons.push(`Lexical rerank ${scores.lexicalScore.toFixed(2)}`);
+    reasons.push(`Structural signal ${scores.structuralScore.toFixed(2)}`);
+    if (scores.crossScore !== undefined) {
+      reasons.push(`Cross rerank ${scores.crossScore.toFixed(2)}`);
+    }
+    reasons.push(`Candidate ${node.type} ${node.name}`);
+
+    return reasons;
+  }
+
+  private applyRecentBoost(
+    candidates: TargetCandidate[],
+    recentPaths: string[]
+  ): void {
+    if (recentPaths.length === 0) {
+      return;
+    }
+
+    const recent = new Set(recentPaths);
+    for (const candidate of candidates) {
+      if (recent.has(candidate.path)) {
+        candidate.score += 1;
+        candidate.reasons.push('Recent focus boost');
+      }
+    }
   }
 }
 
