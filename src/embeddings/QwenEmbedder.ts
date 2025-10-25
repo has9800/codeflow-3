@@ -2,14 +2,18 @@ import { pipeline } from '@xenova/transformers';
 
 export class QwenEmbedder {
   private model: any;
-  private modelName = 'Qwen/Qwen3-Embedding-0.6B';
+  private readonly modelName: string;
   private initialized = false;
+
+  constructor(modelName?: string) {
+    this.modelName = modelName ?? process.env.CODEFLOW_EMBED_MODEL ?? 'Xenova/all-MiniLM-L6-v2';
+  }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
     
     try {
-      this.model = await pipeline('feature-extraction', this.modelName);
+      this.model = await pipeline('feature-extraction', this.modelName, { quantized: true });
       this.initialized = true;
     } catch (error) {
       throw new Error(`Failed to load embedding model: ${error}`);
