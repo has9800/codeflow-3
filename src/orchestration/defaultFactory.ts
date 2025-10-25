@@ -5,7 +5,7 @@ import { TransformersCrossEncoder } from '../retrieval/CrossEncoder.js';
 import type { RetrievalComponentFactory, RetrievalComponentOptions } from './LangGraphPipeline.js';
 
 export function createDefaultRetrievalFactory(): RetrievalComponentFactory {
-  const embedder = new QwenEmbedder();
+  const embedder = new QwenEmbedder(process.env.CODEFLOW_EMBED_MODEL);
   let embedderReady = false;
 
   const ensureEmbedder = async () => {
@@ -31,7 +31,9 @@ export function createDefaultRetrievalFactory(): RetrievalComponentFactory {
     await ensureEmbedder();
 
     const resolver = new TargetResolver(graph, embedder, {
-      crossEncoder: options.useCrossEncoder ? new TransformersCrossEncoder() : undefined,
+      crossEncoder: options.useCrossEncoder ? new TransformersCrossEncoder({
+        model: process.env.CODEFLOW_CROSS_ENCODER_MODEL || undefined,
+      }) : undefined,
     });
 
     const retriever = new DependencyAwareRetriever(graph, { embedder });
