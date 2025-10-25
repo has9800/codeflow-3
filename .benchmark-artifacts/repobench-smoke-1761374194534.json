@@ -1,0 +1,167 @@
+{
+  "dataset": {
+    "name": "RepoBench Smoke",
+    "family": "repobench",
+    "variant": "smoke",
+    "description": "Minimal RepoBench sample for this repository (auth + UI flows)",
+    "tasks": [
+      {
+        "id": "repobench-auth-001",
+        "query": "Refactor authentication service to improve error handling",
+        "targetFilePath": "src/auth/DeviceCodeFlow.ts",
+        "candidateFilePaths": [
+          "src/auth/DeviceCodeFlow.ts",
+          "src/auth/AuthManager.ts",
+          "src/auth/ApiKeyStore.ts"
+        ],
+        "groundTruth": [
+          "src/auth/DeviceCodeFlow.ts",
+          "src/auth/AuthManager.ts"
+        ],
+        "tags": [
+          "auth",
+          "refactor"
+        ],
+        "metadata": {
+          "source": "RepoBench",
+          "difficulty": "easy"
+        }
+      },
+      {
+        "id": "repobench-ui-002",
+        "query": "Audit login UI for missing validation",
+        "targetFilePath": "src/ui/app.tsx",
+        "candidateFilePaths": [
+          "src/ui/app.tsx",
+          "src/ui/components/MessageList.tsx"
+        ],
+        "groundTruth": [
+          "src/ui/app.tsx"
+        ],
+        "tags": [
+          "ui",
+          "validation"
+        ],
+        "metadata": {
+          "source": "RepoBench",
+          "difficulty": "easy"
+        }
+      }
+    ]
+  },
+  "tasks": [
+    {
+      "task": {
+        "id": "repobench-auth-001",
+        "query": "Refactor authentication service to improve error handling",
+        "targetFilePath": "src/auth/DeviceCodeFlow.ts",
+        "candidateFilePaths": [
+          "src/auth/DeviceCodeFlow.ts",
+          "src/auth/AuthManager.ts",
+          "src/auth/ApiKeyStore.ts"
+        ],
+        "groundTruth": [
+          "src/auth/DeviceCodeFlow.ts",
+          "src/auth/AuthManager.ts"
+        ],
+        "tags": [
+          "auth",
+          "refactor"
+        ],
+        "metadata": {
+          "source": "RepoBench",
+          "difficulty": "easy"
+        }
+      },
+      "metrics": {
+        "precisionAtK": 0,
+        "recallAtK": 0,
+        "f1": 0,
+        "coverage": 0.2705,
+        "candidateCount": 5,
+        "entropy": 4.875133714254623,
+        "snr": 3.0998089780324736,
+        "relevanceScore": 0,
+        "answerAccuracy": 0,
+        "exactMatch": 0,
+        "perplexity": 0,
+        "faithfulness": 0,
+        "timeToFirstTokenMs": 0
+      },
+      "actions": [
+        "enable_cross_encoder",
+        "increase_walk_depth",
+        "expand_related",
+        "enable_cross_encoder",
+        "increase_walk_depth",
+        "expand_related"
+      ],
+      "pass": false,
+      "iterations": 2
+    },
+    {
+      "task": {
+        "id": "repobench-ui-002",
+        "query": "Audit login UI for missing validation",
+        "targetFilePath": "src/ui/app.tsx",
+        "candidateFilePaths": [
+          "src/ui/app.tsx",
+          "src/ui/components/MessageList.tsx"
+        ],
+        "groundTruth": [
+          "src/ui/app.tsx"
+        ],
+        "tags": [
+          "ui",
+          "validation"
+        ],
+        "metadata": {
+          "source": "RepoBench",
+          "difficulty": "easy"
+        }
+      },
+      "metrics": {
+        "precisionAtK": 0,
+        "recallAtK": 0,
+        "f1": 0,
+        "coverage": 0.6518333333333334,
+        "candidateCount": 5,
+        "entropy": 4.864511646813783,
+        "snr": 1.4249407906722535,
+        "relevanceScore": 0,
+        "answerAccuracy": 0,
+        "exactMatch": 0,
+        "perplexity": 0,
+        "faithfulness": 0,
+        "timeToFirstTokenMs": 0
+      },
+      "actions": [
+        "enable_cross_encoder",
+        "increase_walk_depth",
+        "expand_related",
+        "enable_cross_encoder",
+        "increase_walk_depth",
+        "expand_related"
+      ],
+      "pass": false,
+      "iterations": 2
+    }
+  ],
+  "aggregate": {
+    "precisionAtK": 0,
+    "recallAtK": 0,
+    "f1": 0,
+    "coverage": 0.4611666666666667,
+    "candidateCount": 5,
+    "entropy": 4.869822680534203,
+    "snr": 2.2623748843523637,
+    "relevanceScore": 0,
+    "answerAccuracy": 0,
+    "exactMatch": 0,
+    "perplexity": 0,
+    "faithfulness": 0,
+    "timeToFirstTokenMs": 0
+  },
+  "timestamp": "2025-10-25T06:36:34.533Z",
+  "durationMs": 2137.3593
+}

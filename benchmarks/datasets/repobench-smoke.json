@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "RepoBench Smoke",
   "family": "repobench",
   "variant": "smoke",
@@ -6,7 +6,7 @@
   "tasks": [
     {
       "id": "repobench-auth-001",
-      "query": "Refactor authentication service to improve error handling",
+      "query": "Refactor DeviceCodeFlow to improve error handling",
       "targetFilePath": "src/auth/DeviceCodeFlow.ts",
       "candidateFilePaths": [
         "src/auth/DeviceCodeFlow.ts",
@@ -17,12 +17,18 @@
         "src/auth/DeviceCodeFlow.ts",
         "src/auth/AuthManager.ts"
       ],
-      "tags": ["auth", "refactor"],
-      "metadata": {"source": "RepoBench", "difficulty": "easy"}
+      "tags": [
+        "auth",
+        "refactor"
+      ],
+      "metadata": {
+        "source": "RepoBench",
+        "difficulty": "easy"
+      }
     },
     {
       "id": "repobench-ui-002",
-      "query": "Audit login UI for missing validation",
+      "query": "Review app.tsx login UI for missing validation",
       "targetFilePath": "src/ui/app.tsx",
       "candidateFilePaths": [
         "src/ui/app.tsx",
@@ -31,8 +37,14 @@
       "groundTruth": [
         "src/ui/app.tsx"
       ],
-      "tags": ["ui", "validation"],
-      "metadata": {"source": "RepoBench", "difficulty": "easy"}
+      "tags": [
+        "ui",
+        "validation"
+      ],
+      "metadata": {
+        "source": "RepoBench",
+        "difficulty": "easy"
+      }
     }
   ]
 }
