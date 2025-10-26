@@ -1,4 +1,4 @@
-# Beta Readiness Checklist
+# Beta Readiness Checklist 1
 
 ## Graph & Storage
 - [x] Wire `DiffOverlay` lifecycle into the CLI so edits persist as overlay deltas before merges.
