@@ -9,7 +9,9 @@ import { TransformersCrossEncoder } from './CrossEncoder.js';
 
 type FusedSeed = ReturnType<typeof reciprocalRankFusion>[number];
 
-export type CandidateSourceScores = Partial<Record<CandidateSource, number>>;
+type ExtendedCandidateSource = CandidateSource | 'SEED';
+
+export type CandidateSourceScores = Partial<Record<ExtendedCandidateSource, number>>;
 
 export interface CandidateScoreBreakdown {
   fused: number;
@@ -95,10 +97,14 @@ export class TargetResolver {
 
     const reranked = await this.reranker.rerank(query, rerankInputs, seedCount);
     const grouped = this.groupByPath(reranked, fusedMap);
-    this.applyRecentBoost(grouped, options?.recentPaths ?? []);
+    const candidateMap = new Map(grouped.map(candidate => [candidate.path, candidate]));
+    this.injectSeedPaths(candidateMap, options?.recentPaths ?? []);
+    const finalCandidates = Array.from(candidateMap.values());
 
-    grouped.sort((a, b) => b.score - a.score);
-    const final = grouped
+    this.applyRecentBoost(finalCandidates, options?.recentPaths ?? []);
+
+    finalCandidates.sort((a, b) => b.score - a.score);
+    const final = finalCandidates
       .map(candidate => ({
         ...candidate,
         reasons: Array.from(new Set(candidate.reasons)).slice(0, 6),
@@ -290,5 +296,31 @@ export class TargetResolver {
       }
     }
   }
-}
 
+  private injectSeedPaths(
+    candidateMap: Map<string, TargetCandidate>,
+    seedPaths: string[]
+  ): void {
+    if (seedPaths.length === 0) {
+      return;
+    }
+
+    for (const path of seedPaths) {
+      if (candidateMap.has(path)) {
+        continue;
+      }
+
+      const nodes = this.graph.getNodesByPath(path);
+      if (nodes.length === 0) {
+        continue;
+      }
+
+      const candidate = this.createCandidate(path);
+      candidate.nodes.push(...nodes.slice(0, 3));
+      candidate.score += 0.5;
+      candidate.reasons.push('Seed path (dataset hint)');
+      candidate.sourceScores.SEED = (candidate.sourceScores.SEED ?? 0) + 1;
+      candidateMap.set(path, candidate);
+    }
+  }
+}
