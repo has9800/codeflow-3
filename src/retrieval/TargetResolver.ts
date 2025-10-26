@@ -29,6 +29,8 @@ export interface TargetCandidate {
   reasons: string[];
   sourceScores: CandidateSourceScores;
   scoreBreakdown: CandidateScoreBreakdown;
+  maxLexical: number;
+  maxCross?: number;
 }
 
 export interface TargetResolution {
@@ -208,8 +210,9 @@ export class TargetResolver {
       const node = this.nodeIndex.get(result.id);
       if (!node) continue;
       const fused = fusedMap.get(result.id);
+      const pathKey = this.normalizePath(node.path);
 
-      const entry = grouped.get(node.path) ?? this.createCandidate(node.path);
+      const entry = grouped.get(pathKey) ?? this.createCandidate(pathKey);
 
       entry.score += result.score;
       entry.nodes.push(node);
@@ -218,8 +221,12 @@ export class TargetResolver {
       entry.scoreBreakdown.semantic += result.semanticScore;
       entry.scoreBreakdown.lexical += result.lexicalScore;
       entry.scoreBreakdown.structural += result.structuralScore;
+      entry.maxLexical = Math.max(entry.maxLexical, result.lexicalScore);
       if (this.crossEncoder && entry.scoreBreakdown.cross !== undefined) {
         entry.scoreBreakdown.cross += result.crossScore ?? 0;
+      }
+      if (result.crossScore !== undefined) {
+        entry.maxCross = entry.maxCross === undefined ? result.crossScore : Math.max(entry.maxCross ?? 0, result.crossScore);
       }
 
       if (fused) {
@@ -227,8 +234,7 @@ export class TargetResolver {
           entry.sourceScores[source] = (entry.sourceScores[source] ?? 0) + value;
         }
       }
-
-      grouped.set(node.path, entry);
+      grouped.set(pathKey, entry);
     }
 
     return Array.from(grouped.values());
@@ -253,6 +259,8 @@ export class TargetResolver {
       reasons: [],
       sourceScores: {},
       scoreBreakdown: breakdown,
+      maxLexical: 0,
+      maxCross: this.crossEncoder ? 0 : undefined,
     };
   }
 
@@ -360,6 +368,45 @@ export class TargetResolver {
     }
   }
 
+  private applyStrictFiltering(candidates: TargetCandidate[], query: string): TargetCandidate[] {
+    const filtered = candidates.filter(candidate => this.passesStrictMatch(candidate, query));
+    return filtered.length > 0 ? filtered : candidates;
+  }
+
+  private passesStrictMatch(candidate: TargetCandidate, query: string): boolean {
+    if (candidate.sourceScores.SEED && candidate.sourceScores.SEED > 0) {
+      return true;
+    }
+
+    if (this.queryMentionsPath(query, candidate.path)) {
+      return true;
+    }
+
+    if (candidate.maxLexical >= this.strictLexicalThreshold()) {
+      return true;
+    }
+
+    if (candidate.maxCross !== undefined && candidate.maxCross >= this.strictCrossThreshold()) {
+      return true;
+    }
+
+    const inferred = this.inferQueryPaths(query);
+    if (inferred.some(path => path === this.normalizePath(candidate.path))) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private queryMentionsPath(query: string, candidatePath: string): boolean {
+    const queryLower = query.toLowerCase();
+    const normalized = this.normalizePath(candidatePath);
+    const base = normalized.split('/').pop() ?? normalized;
+    const baseLower = base.toLowerCase();
+    const stem = baseLower.replace(/\.[^.]+$/, '');
+    return queryLower.includes(baseLower) || queryLower.includes(stem);
+  }
+
   private inferQueryPaths(query: string): string[] {
     const results = new Set<string>();
     if (!query) return Array.from(results);
@@ -397,5 +444,17 @@ export class TargetResolver {
   private normalizePath(filePath: string): string {
     if (!filePath) return filePath;
     return path.normalize(filePath).replace(/\\/g, '/');
+  }
+
+  private strictLexicalThreshold(): number {
+    const raw = process.env.CODEFLOW_STRICT_LEX_THRESHOLD;
+    const parsed = raw ? Number(raw) : NaN;
+    return Number.isFinite(parsed) ? parsed : 0.25;
+  }
+
+  private strictCrossThreshold(): number {
+    const raw = process.env.CODEFLOW_STRICT_CROSS_THRESHOLD;
+    const parsed = raw ? Number(raw) : NaN;
+    return Number.isFinite(parsed) ? parsed : 0.45;
   }
 }
