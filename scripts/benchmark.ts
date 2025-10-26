@@ -53,7 +53,8 @@ async function main() {
       }),
     },
     {
-      maxIterations: 2,
+      maxIterations: 3,
+      seedLimit: 8,
     }
   );
 

@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { CodeGraph, type GraphNode } from '../graph/CodeGraph.js';
 import { logger } from '../utils/logger.js';
 import { HnswAnnIndex, type AnnResult } from './AnnIndex.js';
@@ -54,6 +55,7 @@ export class TargetResolver {
   private readonly annIndex = new HnswAnnIndex();
   private readonly bm25Index = new Bm25Index();
   private readonly nodeIndex = new Map<string, GraphNode>();
+  private readonly nameLookup = new Map<string, Set<string>>();
   private readonly crossEncoder?: CrossEncoder;
   private readonly reranker: HybridReranker;
 
@@ -97,11 +99,14 @@ export class TargetResolver {
 
     const reranked = await this.reranker.rerank(query, rerankInputs, seedCount);
     const grouped = this.groupByPath(reranked, fusedMap);
-    const candidateMap = new Map(grouped.map(candidate => [candidate.path, candidate]));
-    this.injectSeedPaths(candidateMap, options?.recentPaths ?? []);
+    const candidateMap = new Map(
+      grouped.map(candidate => [this.normalizePath(candidate.path), { ...candidate, path: this.normalizePath(candidate.path) }])
+    );
+    this.injectSeedPaths(candidateMap, options?.recentPaths ?? [], query);
     const finalCandidates = Array.from(candidateMap.values());
 
     this.applyRecentBoost(finalCandidates, options?.recentPaths ?? []);
+    this.applyIntentBoost(query, finalCandidates);
 
     finalCandidates.sort((a, b) => b.score - a.score);
     const final = finalCandidates
@@ -142,6 +147,7 @@ export class TargetResolver {
   private buildIndexes(): void {
     for (const node of this.graph.getAllNodes()) {
       this.nodeIndex.set(node.id, node);
+      this.addToNameLookup(node);
 
       if (node.embedding && node.embedding.length > 0) {
         try {
@@ -288,9 +294,9 @@ export class TargetResolver {
       return;
     }
 
-    const recent = new Set(recentPaths);
+    const recent = new Set(recentPaths.map(p => this.normalizePath(p)));
     for (const candidate of candidates) {
-      if (recent.has(candidate.path)) {
+      if (recent.has(this.normalizePath(candidate.path))) {
         candidate.score += 1;
         candidate.reasons.push('Recent focus boost');
       }
@@ -299,28 +305,97 @@ export class TargetResolver {
 
   private injectSeedPaths(
     candidateMap: Map<string, TargetCandidate>,
-    seedPaths: string[]
+    seedPaths: string[],
+    query: string
   ): void {
-    if (seedPaths.length === 0) {
-      return;
+    const seeds = new Set<string>();
+    for (const seed of seedPaths) {
+      if (seed) {
+        seeds.add(this.normalizePath(seed));
+      }
+    }
+    for (const inferred of this.inferQueryPaths(query)) {
+      seeds.add(this.normalizePath(inferred));
     }
 
-    for (const path of seedPaths) {
-      if (candidateMap.has(path)) {
+    for (const seedPath of seeds) {
+      if (!seedPath) continue;
+      if (candidateMap.has(seedPath)) {
         continue;
       }
 
-      const nodes = this.graph.getNodesByPath(path);
+      const nodes = this.graph.getNodesByPath(seedPath);
       if (nodes.length === 0) {
         continue;
       }
 
-      const candidate = this.createCandidate(path);
+      const candidate = this.createCandidate(seedPath);
       candidate.nodes.push(...nodes.slice(0, 3));
-      candidate.score += 0.5;
+      candidate.score += 5;
       candidate.reasons.push('Seed path (dataset hint)');
       candidate.sourceScores.SEED = (candidate.sourceScores.SEED ?? 0) + 1;
-      candidateMap.set(path, candidate);
+      candidateMap.set(seedPath, candidate);
     }
+  }
+
+  private applyIntentBoost(query: string, candidates: TargetCandidate[]): void {
+    if (!query.trim() || candidates.length === 0) {
+      return;
+    }
+
+    const lower = query.toLowerCase();
+    const boosts: Array<{ match: RegExp; path: RegExp; score: number; reason: string }> = [
+      { match: /\b(auth|token|device|login|oauth)\b/, path: /src\/auth\//, score: 2, reason: 'Auth intent boost' },
+      { match: /\b(ui|component|tsx|react|form|input|button|validation)\b/, path: /src\/ui\//, score: 2, reason: 'UI intent boost' },
+      { match: /\btest|spec|jest|vitest\b/, path: /tests?\//, score: 1.5, reason: 'Test intent boost' },
+    ];
+
+    for (const candidate of candidates) {
+      for (const heuristic of boosts) {
+        if (heuristic.match.test(lower) && heuristic.path.test(candidate.path)) {
+          candidate.score += heuristic.score;
+          candidate.reasons.push(heuristic.reason);
+        }
+      }
+    }
+  }
+
+  private inferQueryPaths(query: string): string[] {
+    const results = new Set<string>();
+    if (!query) return Array.from(results);
+
+    const fileRegex = /[A-Za-z0-9_\-./\\]+\.(?:ts|tsx|js|jsx|py)/gi;
+    let match: RegExpExecArray | null;
+    while ((match = fileRegex.exec(query)) !== null) {
+      results.add(this.normalizePath(match[0]));
+    }
+
+    const tokenRegex = /[A-Za-z][A-Za-z0-9]{3,}/g;
+    const tokens = query.match(tokenRegex) ?? [];
+    for (const token of tokens) {
+      const lower = token.toLowerCase();
+      const paths = this.nameLookup.get(lower);
+      if (!paths) continue;
+      for (const p of paths) {
+        results.add(p);
+      }
+    }
+
+    return Array.from(results);
+  }
+
+  private addToNameLookup(node: GraphNode): void {
+    const key = node.name?.toLowerCase();
+    if (!key) {
+      return;
+    }
+    const bucket = this.nameLookup.get(key) ?? new Set<string>();
+    bucket.add(this.normalizePath(node.path));
+    this.nameLookup.set(key, bucket);
+  }
+
+  private normalizePath(filePath: string): string {
+    if (!filePath) return filePath;
+    return path.normalize(filePath).replace(/\\/g, '/');
   }
 }

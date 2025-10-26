@@ -78,7 +78,14 @@ export class EvaluationAgent {
 
     if (precisionAtK < this.config.precisionThreshold) {
       actions.push('enable_cross_encoder');
+      actions.push('increase_walk_depth');
+      actions.push('expand_related');
       notes.push(`precision@${k} ${precisionAtK.toFixed(2)} below threshold ${this.config.precisionThreshold}`);
+    }
+
+    if (precisionAtK < Math.min(0.4, this.config.precisionThreshold)) {
+      actions.push('increase_token_budget');
+      notes.push(`precision low (${precisionAtK.toFixed(2)}), allowing more context`);
     }
 
     if (recallAtK < this.config.recallThreshold) {
