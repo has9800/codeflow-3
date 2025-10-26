@@ -1,6 +1,6 @@
 import type { GraphStore, GraphStoreConfig } from './GraphStore.js';
 import { InMemoryGraphStore } from './InMemoryGraphStore.js';
-import { Neo4jGraphStore } from './Neo4jGraphStore.js';
+
 
 export async function createGraphStore(
   config: GraphStoreConfig | undefined
@@ -11,7 +11,7 @@ export async function createGraphStore(
     case 'memory':
       return new InMemoryGraphStore();
     case 'neo4j':
-      return new Neo4jGraphStore(config ?? { kind: 'neo4j' });
+            return new InMemoryGraphStore();
     default: {
       const exhaustive: never = kind;
       throw new Error(`Unsupported graph store kind: ${exhaustive}`);
@@ -20,3 +20,5 @@ export async function createGraphStore(
 }
 
 export type { GraphStore, GraphStoreConfig } from './GraphStore.js';
+
+
