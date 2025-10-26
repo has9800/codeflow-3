@@ -234,13 +234,21 @@ export class SymbolExtractor {
       .map(param => param.split(':')[0]?.trim() ?? param);
   }
 
+  private getPrevSibling(node: Parser.SyntaxNode | null): Parser.SyntaxNode | null {
+    if (!node) {
+      return null;
+    }
+    const candidate = (node as unknown as { prevSibling?: Parser.SyntaxNode | null }).prevSibling;
+    return candidate ?? null;
+  }
+
   private extractDocumentation(node: Parser.SyntaxNode): string | undefined {
-    let current: Parser.SyntaxNode | null = node.prevSibling;
+    let current: Parser.SyntaxNode | null = this.getPrevSibling(node);
     const docs: string[] = [];
 
     while (current && current.type === 'comment') {
       docs.unshift(current.text.replace(/^\/\*\*?|\*\/$/g, '').trim());
-      current = current.prevSibling;
+      current = this.getPrevSibling(current);
     }
 
     const documentation = docs.join('\n').trim();

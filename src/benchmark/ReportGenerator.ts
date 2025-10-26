@@ -1,6 +1,6 @@
 ﻿import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { BenchmarkSummary } from './types.js';
+import type { BenchmarkSummary, TaskResultMetrics } from './types.js';
 
 export interface ReportOptions {
   outputDir?: string;
@@ -56,10 +56,10 @@ export class ReportGenerator {
   }
 }
 
-function renderMetricsTable(metrics: Record<string, number>): string {
+function renderMetricsTable(metrics: TaskResultMetrics): string {
   const headers = '| Metric | Value |\n| --- | --- |';
-  const rows = Object.entries(metrics)
-    .map(([key, value]) => `| ${key} | ${typeof value === 'number' ? value.toFixed(4) : value} |`)
+  const rows = (Object.entries(metrics) as Array<[keyof TaskResultMetrics, number]>)
+    .map(([key, value]) => `| ${String(key)} | ${value.toFixed(4)} |`)
     .join('\n');
   return `${headers}\n${rows}`;
 }

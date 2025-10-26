@@ -153,7 +153,7 @@ export class LangGraphPipeline {
         await components.retriever.initialize();
       });
 
-      resolution = await trace.record(
+      const resolved = await trace.record(
         'target.resolve',
         () =>
           components.resolver.resolve(input.query, {
@@ -165,10 +165,16 @@ export class LangGraphPipeline {
           primaryPath: res.primary?.path,
         })
       );
+      resolution = resolved;
+      const activeResolution = resolution;
+      if (!activeResolution) {
+        pipelineLogger.warn('target resolution produced no candidates', { iteration });
+        break;
+      }
 
-      const primaryFilePath = input.targetFilePath ?? resolution.primary?.path;
+      const primaryFilePath = input.targetFilePath ?? activeResolution.primary?.path;
 
-      context = await trace.record(
+      const builtContext = await trace.record(
         'context.build',
         () =>
           components.retriever.buildContextForChange(
@@ -182,14 +188,20 @@ export class LangGraphPipeline {
           primaryFilePath: ctx.primaryFilePath,
         })
       );
+      context = builtContext;
+      const activeContext = context;
+      if (!activeContext) {
+        pipelineLogger.warn('context builder returned null context', { iteration, primaryFilePath });
+        break;
+      }
 
-      evaluation = await trace.record(
+      const decision = await trace.record(
         'agent.evaluate',
         () =>
           this.deps.evaluationAgent.evaluate({
             query: input.query,
-            resolution,
-            context,
+            resolution: activeResolution,
+            context: activeContext,
             groundTruth: input.groundTruth,
             iteration,
           }),
@@ -200,6 +212,11 @@ export class LangGraphPipeline {
           actions: decision.actions,
         })
       );
+      evaluation = decision;
+      if (!evaluation) {
+        pipelineLogger.warn('evaluation agent returned null decision', { iteration });
+        break;
+      }
 
       pipelineLogger.info('evaluation result', {
         iteration,
@@ -212,7 +229,7 @@ export class LangGraphPipeline {
       candidatePaths = Array.from(
         new Set([
           ...candidatePaths,
-          ...resolution.candidates.map(candidate => candidate.path),
+          ...activeResolution.candidates.map(candidate => candidate.path),
         ])
       );
 

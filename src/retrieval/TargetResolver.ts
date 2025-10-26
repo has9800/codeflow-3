@@ -145,10 +145,24 @@ export class TargetResolver {
         }
       }
 
-      if (node.content.trim().length > 0) {
-        this.bm25Index.addDocument(node.id, node.content);
+      const lexicalContent = this.getLexicalContent(node);
+      if (lexicalContent) {
+        this.bm25Index.addDocument(node.id, lexicalContent);
       }
     }
+  }
+
+  private getLexicalContent(node: GraphNode): string | undefined {
+    const fromMetadata = node.metadata?.embeddingText as unknown;
+    if (typeof fromMetadata === 'string') {
+      const trimmed = fromMetadata.trim();
+      if (trimmed.length > 0) {
+        return trimmed;
+      }
+    }
+
+    const fallback = node.content.trim();
+    return fallback.length > 0 ? fallback : undefined;
   }
 
   private async searchAnn(query: string, topK: number): Promise<AnnResult[]> {

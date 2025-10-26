@@ -18,6 +18,8 @@ const EDGE_LABELS: Record<GraphEdge['type'], string> = {
   imports: 'IMPORTS',
   calls: 'CALLS',
   references: 'REFERENCES',
+  extends: 'EXTENDS',
+  implements: 'IMPLEMENTS',
 };
 
 const REVERSE_EDGE_LABELS = Object.fromEntries(

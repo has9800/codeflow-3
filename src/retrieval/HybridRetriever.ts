@@ -1,6 +1,7 @@
 import { CodeGraph, GraphNode } from '../graph/CodeGraph.js';
 import { GraphWalker } from '../graph/GraphWalker.js';
-import { QwenEmbedder } from '../embeddings/QwenEmbedder.js';
+import { createEmbedder } from '../embeddings/TransformersEmbedder.js';
+import type { Embedder } from '../embeddings/types.js';
 import { TextSearchEngine } from './TextSearchEngine.js';
 import { ContextBuilder } from './ContextBuilder.js';
 import { TokenCounter } from './TokenCounter.js';
@@ -35,7 +36,7 @@ const SIMILARITY_THRESHOLD = 0.6; // Below this, fallback to text search
 
 export class HybridRetriever {
   private walker: GraphWalker;
-  private embedder: QwenEmbedder;
+  private embedder: Embedder;
   private textSearch: TextSearchEngine;
   private contextBuilder: ContextBuilder;
   private tokenCounter: TokenCounter;
@@ -45,7 +46,7 @@ export class HybridRetriever {
     private tiers: RetrievalTier[] = DEFAULT_TIERS
   ) {
     this.walker = new GraphWalker(graph);
-    this.embedder = new QwenEmbedder();
+    this.embedder = createEmbedder();
     this.textSearch = new TextSearchEngine();
     this.contextBuilder = new ContextBuilder();
     this.tokenCounter = new TokenCounter();
@@ -145,7 +146,11 @@ export class HybridRetriever {
 
     for (const node of nodes) {
       if (!node.embedding) {
-        node.embedding = await this.embedder.embed(node.content);
+        const source =
+          typeof node.metadata?.embeddingText === 'string'
+            ? (node.metadata.embeddingText as string)
+            : node.content;
+        node.embedding = await this.embedder.embed(source);
       }
 
       const score = this.cosineSimilarity(queryEmbedding, node.embedding);
