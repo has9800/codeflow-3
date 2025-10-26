@@ -8,7 +8,7 @@ import { createGraphStore } from './graph/store/factory.js';
 import { loadConfig, initConfig } from './config/settings.js';
 import { AuthManager } from './auth/AuthManager.js';
 import { SUPPORTED_MODELS, getModel } from './config/models.js';
-import { prepareNeo4jConfig, destroyProvisionedNeo4j } from './graph/store/provisioning.js';
+
 
 async function main() {
   program
@@ -43,32 +43,7 @@ async function main() {
         await initConfig({ defaultModel: resolvedModel });
       }
 
-      let graphStoreConfig = config.graphStore;
-      let cleanupProvisioned = async () => {};
-      if (graphStoreConfig.kind === 'neo4j') {
-        graphStoreConfig = await prepareNeo4jConfig(graphStoreConfig);
-        if (graphStoreConfig.provisioning?.enabled) {
-          let cleaned = false;
-          cleanupProvisioned = async () => {
-            if (cleaned) return;
-            cleaned = true;
-            await destroyProvisionedNeo4j(graphStoreConfig);
-          };
-          const exitSignals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM'];
-          exitSignals.forEach((signal) => {
-            process.once(signal, () => {
-              cleanupProvisioned().finally(() => process.exit(0));
-            });
-          });
-          process.once('beforeExit', () => {
-            cleanupProvisioned().catch(() => {});
-          });
-          process.once('exit', () => {
-            cleanupProvisioned().catch(() => {});
-          });
-        }
-      }
-
+      let graphStoreConfig = { kind: 'memory' as const };
       if (!offline) {
         try {
           const session = await authManager.ensureAuthenticated();
@@ -139,7 +114,7 @@ async function main() {
     .description('Clear stored credentials and logout')
     .action(async () => {
       const config = await loadConfig();
-      await destroyProvisionedNeo4j(config.graphStore);
+      
       const authManager = new AuthManager();
       await authManager.logout();
       console.log('Logged out of CodeFlow and cleaned up resources.');
@@ -202,3 +177,4 @@ async function resolveModel(cliModel: string | undefined, defaultModel: string |
 
   return model;
 }
+
