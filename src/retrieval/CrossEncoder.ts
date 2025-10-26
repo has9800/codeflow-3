@@ -38,11 +38,22 @@ export class TransformersCrossEncoder implements CrossEncoder {
   async score(query: string, node: GraphNode): Promise<number> {
     try {
       const classifier = await this.pipelinePromise;
+      const text = this.normalizeText(query);
+      const textPair = this.buildDocumentPayload(node);
+      if (process.env.CODEFLOW_DEBUG === '1') {
+        console.debug('CrossEncoder input', {
+          textType: typeof text,
+          textPairType: typeof textPair,
+          textSample: text.slice(0, 80),
+          textPairSample: textPair.slice(0, 80),
+        });
+      }
+
       const response = await classifier(
         [
           {
-            text: this.normalizeText(query),
-            text_pair: this.buildDocumentPayload(node),
+            text,
+            text_pair: textPair,
           },
         ],
         { topk: 1 }
