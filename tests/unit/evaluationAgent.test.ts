@@ -1,4 +1,4 @@
-﻿import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { EvaluationAgent } from '../../src/orchestration/EvaluationAgent.js';
 import type { TargetResolution } from '../../src/retrieval/TargetResolver.js';
 import type { DependencyContext } from '../../src/retrieval/DependencyAwareRetriever.js';
@@ -16,6 +16,8 @@ function createResolution(paths: string[]): TargetResolution {
       lexical: 0.3,
       structural: 0.2,
     },
+    maxLexical: 0.3,
+    maxCross: 0,
   }));
   return {
     primary: candidates[0],
