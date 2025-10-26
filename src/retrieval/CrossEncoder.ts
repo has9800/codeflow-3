@@ -40,8 +40,9 @@ export class TransformersCrossEncoder implements CrossEncoder {
       const classifier = await this.pipelinePromise;
       const text = this.normalizeText(query);
       const textPair = this.buildDocumentPayload(node);
+
       if (process.env.CODEFLOW_DEBUG === '1') {
-        console.debug('CrossEncoder input', {
+        console.warn('CrossEncoder input', {
           textType: typeof text,
           textPairType: typeof textPair,
           textSample: text.slice(0, 80),
@@ -49,18 +50,12 @@ export class TransformersCrossEncoder implements CrossEncoder {
         });
       }
 
-      const response = await classifier(
-        [
-          {
-            text,
-            text_pair: textPair,
-          },
-        ],
-        { topk: 1 }
-      );
+      const response = await classifier(text, {
+        text_pair: textPair,
+        topk: 1,
+      });
 
-      const first = Array.isArray(response) ? response[0] : response;
-      const result = Array.isArray(first) ? first[0] : first;
+      const result = Array.isArray(response) ? response[0] : response;
       const score = result && typeof result.score === 'number' ? result.score : 0;
       return score;
     } catch (error) {
