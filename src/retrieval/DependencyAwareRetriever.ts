@@ -831,7 +831,7 @@ export class DependencyAwareRetriever {
   }
 
   private formatNode(node: GraphNode): string {
-    const snippet = this.formatNodeContent(node);
+    const snippet = DependencyAwareRetriever.formatNodeContent(node);
     return `## ${node.type}: ${node.name}
 File: ${node.path}
 Lines: ${node.startLine}-${node.endLine}
@@ -841,7 +841,7 @@ ${snippet}
 \`\`\``;
   }
 
-  private formatNodeContent(node: GraphNode): string {
+  private static formatNodeContent(node: GraphNode): string {
     const raw = typeof node.content === 'string' ? node.content : String(node.content ?? '');
     const lines = raw.split(/\r?\n/);
     const sliced = lines.slice(0, NODE_SNIPPET_MAX_LINES);
@@ -859,7 +859,7 @@ ${snippet}
 
   private estimateFullContext(filePath: string): number {
     const nodes = this.graph.getNodesByPath(filePath);
-    const content = nodes.map(n => this.formatNodeContent(n)).join('\n');
+    const content = nodes.map(n => DependencyAwareRetriever.formatNodeContent(n)).join('\n');
     return this.tokenCounter.count(content) * 3; // Multiply by 3 for typical full-context overhead
   }
 }
