@@ -40,7 +40,7 @@ export class TransformersCrossEncoder implements CrossEncoder {
       const classifier = await this.pipelinePromise;
       const response = await classifier(
         {
-          text: query,
+          text: String(query),
           text_pair: this.buildDocumentPayload(node),
         },
         { topk: 1 }
@@ -59,7 +59,8 @@ export class TransformersCrossEncoder implements CrossEncoder {
 
   private buildDocumentPayload(node: GraphNode): string {
     const header = `${node.name} (${node.path})`;
-    const snippet = node.content.length > 4000 ? `${node.content.slice(0, 4000)}…` : node.content;
+    const content = typeof node.content === 'string' ? node.content : String(node.content ?? '');
+    const snippet = content.length > 4000 ? `${content.slice(0, 4000)}...` : content;
     return `${header}\n${snippet}`;
   }
 }
