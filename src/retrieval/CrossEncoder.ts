@@ -39,15 +39,18 @@ export class TransformersCrossEncoder implements CrossEncoder {
     try {
       const classifier = await this.pipelinePromise;
       const response = await classifier(
-        {
-          text: String(query),
-          text_pair: this.buildDocumentPayload(node),
-        },
+        [
+          {
+            text: this.normalizeText(query),
+            text_pair: this.buildDocumentPayload(node),
+          },
+        ],
         { topk: 1 }
       );
 
-      const result = Array.isArray(response) ? response[0] : response;
-      const score = (result && typeof result.score === 'number') ? result.score : 0;
+      const first = Array.isArray(response) ? response[0] : response;
+      const result = Array.isArray(first) ? first[0] : first;
+      const score = result && typeof result.score === 'number' ? result.score : 0;
       return score;
     } catch (error) {
       if (process.env.CODEFLOW_DEBUG === '1') {
@@ -59,8 +62,25 @@ export class TransformersCrossEncoder implements CrossEncoder {
 
   private buildDocumentPayload(node: GraphNode): string {
     const header = `${node.name} (${node.path})`;
-    const content = typeof node.content === 'string' ? node.content : String(node.content ?? '');
+    const content = this.normalizeText(node.content);
     const snippet = content.length > 4000 ? `${content.slice(0, 4000)}...` : content;
     return `${header}\n${snippet}`;
+  }
+
+  private normalizeText(value: unknown): string {
+    if (typeof value === 'string') {
+      return value;
+    }
+    if (value === null || value === undefined) {
+      return '';
+    }
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    }
+    return String(value);
   }
 }
