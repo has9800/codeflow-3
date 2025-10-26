@@ -12,7 +12,7 @@ import {
   type DependencyContext,
 } from '../retrieval/DependencyAwareRetriever.js';
 import { TargetResolver } from '../retrieval/TargetResolver.js';
-import { QwenEmbedder } from '../embeddings/QwenEmbedder.js';
+import { createEmbedder } from '../embeddings/TransformersEmbedder.js';
 import { OpenRouterClient } from '../llm/OpenRouterClient.js';
 import type { ChatRequest, ChatChunk } from '../llm/OpenRouterClient.js';
 import { PromptBuilder } from '../llm/PromptBuilder.js';
@@ -97,7 +97,7 @@ export function App({ graph, graphManager, apiKey, accountLabel, model, workingD
     setGraphState(graph);
   }, [graph]);
 
-  const embedder = useMemo(() => new QwenEmbedder(), []);
+  const embedder = useMemo(() => createEmbedder(), []);
   const retriever = useMemo(
     () => new DependencyAwareRetriever(graphState, { embedder }),
     [graphState, embedder]

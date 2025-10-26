@@ -6,14 +6,11 @@ import { CodeGraph, type GraphEdge, type GraphNode } from './CodeGraph.js';
 import { TreeSitterParser } from '../parser/TreeSitterParser.js';
 import { SymbolExtractor, type ExtractedSymbol, type SymbolReference } from '../parser/SymbolExtractor.js';
 import { languageRegistry, type SupportedLanguage } from '../parser/LanguageRegistry.js';
-import { QwenEmbedder } from '../embeddings/QwenEmbedder.js';
+import { createEmbedder } from '../embeddings/TransformersEmbedder.js';
+import type { Embedder } from '../embeddings/types.js';
 import { EmbeddingCache } from '../embeddings/EmbeddingCache.js';
 import { FileGraphSnapshot } from './types.js';
-
-interface Embedder {
-  initialize(): Promise<void>;
-  embed(text: string): Promise<number[]>;
-}
+import { SymbolSerializer } from '../parser/SymbolSerializer.js';
 
 class NoopEmbedder implements Embedder {
   async initialize(): Promise<void> {
@@ -30,6 +27,7 @@ interface GraphBuilderDeps {
   extractor?: SymbolExtractor;
   embedder?: Embedder;
   cache?: EmbeddingCache | null;
+  serializer?: SymbolSerializer;
 }
 
 interface SymbolEdge {
@@ -56,13 +54,15 @@ export class GraphBuilder {
   private readonly extractor: SymbolExtractor;
   private embedder: Embedder;
   private readonly embeddingCache: EmbeddingCache | null;
+  private readonly serializer: SymbolSerializer;
   private embeddingsEnabled = true;
 
   constructor(private readonly rootDir: string, deps: GraphBuilderDeps = {}) {
     this.parser = deps.parser ?? new TreeSitterParser();
     this.extractor = deps.extractor ?? new SymbolExtractor();
-    this.embedder = deps.embedder ?? new QwenEmbedder();
+    this.embedder = deps.embedder ?? createEmbedder();
     this.embeddingCache = deps.cache ?? new EmbeddingCache(rootDir);
+    this.serializer = deps.serializer ?? new SymbolSerializer();
   }
 
   async build(): Promise<CodeGraph> {
@@ -146,12 +146,18 @@ export class GraphBuilder {
     const nameIndex = new Map<string, GraphNode[]>();
     const nodeIndex = new Map<string, GraphNode>();
 
+    const referenceMap = this.groupReferencesBySymbol(analysis.references);
+    const importSummary = this.buildImportSummary(analysis.symbols);
+
     const symbolNodes = await this.createSymbolNodes(
       filePath,
+      language,
       analysis.symbols,
       symbolIndex,
       rangeIndex,
-      nameIndex
+      nameIndex,
+      referenceMap,
+      importSummary
     );
     for (const node of symbolNodes) {
       nodeIndex.set(node.id, node);
@@ -248,10 +254,13 @@ export class GraphBuilder {
 
   private async createSymbolNodes(
     filePath: string,
+    language: SupportedLanguage,
     symbols: ExtractedSymbol[],
     symbolIndex: Map<string, ExtractedSymbol>,
     rangeIndex: Map<string, string>,
-    nameIndex: Map<string, GraphNode[]>
+    nameIndex: Map<string, GraphNode[]>,
+    referenceMap: Map<string, string[]>,
+    importSummary: string[]
   ): Promise<GraphNode[]> {
     const nodes: GraphNode[] = [];
     for (const symbol of symbols) {
@@ -261,12 +270,20 @@ export class GraphBuilder {
 
       const id = this.createSymbolNodeId(filePath, symbol);
       let embedding: number[] | undefined;
+      const rangeKey = this.createRangeKey(symbol.startIndex, symbol.endIndex);
+      const referencedSymbols = referenceMap.get(rangeKey) ?? [];
+      const embeddingText = this.serializer.serialize(symbol, {
+        filePath,
+        language,
+        imports: importSummary,
+        referencedSymbols,
+      });
 
       if (this.embeddingsEnabled) {
-        embedding = this.embeddingCache?.get(symbol.content);
+        embedding = this.embeddingCache?.get(embeddingText);
         if (!embedding) {
-          embedding = await this.embedder.embed(symbol.content);
-          this.embeddingCache?.set(symbol.content, embedding);
+          embedding = await this.embedder.embed(embeddingText);
+          this.embeddingCache?.set(embeddingText, embedding);
         }
       }
 
@@ -282,6 +299,8 @@ export class GraphBuilder {
         signature: symbol.signature,
         startIndex: symbol.startIndex,
         endIndex: symbol.endIndex,
+        referencedSymbols,
+        embeddingText,
       };
       if (symbol.exported) {
         metadata.symbolKey = this.createSymbolKey(filePath, symbol.name);
@@ -301,12 +320,45 @@ export class GraphBuilder {
 
       nodes.push(node);
       symbolIndex.set(id, symbol);
-      rangeIndex.set(this.createRangeKey(symbol.startIndex, symbol.endIndex), id);
+      rangeIndex.set(rangeKey, id);
       const nameBucket = nameIndex.get(symbol.name) ?? [];
       nameBucket.push(node);
       nameIndex.set(symbol.name, nameBucket);
     }
     return nodes;
+  }
+
+  private groupReferencesBySymbol(references: SymbolReference[]): Map<string, string[]> {
+    const map = new Map<string, Set<string>>();
+    for (const reference of references) {
+      const key = this.createRangeKey(reference.sourceStartIndex, reference.sourceEndIndex);
+      const bucket = map.get(key) ?? new Set<string>();
+      bucket.add(`${reference.kind}:${reference.targetName}`);
+      if (reference.targetModule) {
+        bucket.add(`module:${reference.targetModule}`);
+      }
+      map.set(key, bucket);
+    }
+    return new Map<string, string[]>(
+      Array.from(map.entries(), ([key, set]) => [key, Array.from(set)])
+    );
+  }
+
+  private buildImportSummary(symbols: ExtractedSymbol[]): string[] {
+    const summary = new Set<string>();
+    for (const symbol of symbols) {
+      if (symbol.type !== 'import') {
+        continue;
+      }
+      const importPath = this.extractImportPath(symbol.content) ?? 'unknown';
+      const importedSymbols = this.extractImportedSymbols(symbol.content);
+      if (importedSymbols.length === 0) {
+        summary.add(importPath);
+      } else {
+        summary.add(`${importPath}: ${importedSymbols.join(', ')}`);
+      }
+    }
+    return Array.from(summary.values());
   }
 
   private buildContainmentEdges(fileNodeId: string, symbolNodes: GraphNode[]): GraphEdge[] {

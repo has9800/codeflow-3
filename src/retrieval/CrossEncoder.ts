@@ -7,7 +7,6 @@ export interface CrossEncoder {
 
 export interface CrossEncoderOptions {
   model?: string;
-  device?: 'cpu' | 'gpu';
   cacheDir?: string;
 }
 
@@ -33,7 +32,6 @@ export class TransformersCrossEncoder implements CrossEncoder {
 
     this.pipelinePromise = pipeline('text-classification', this.modelId, {
       quantized: true,
-      device: options.device ?? 'cpu',
     });
   }
 
@@ -65,4 +63,3 @@ export class TransformersCrossEncoder implements CrossEncoder {
     return `${header}\n${snippet}`;
   }
 }
-

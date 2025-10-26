@@ -1,6 +1,7 @@
 import { CodeGraph, GraphNode } from '../graph/CodeGraph.js';
 import { GraphWalker } from '../graph/GraphWalker.js';
-import { QwenEmbedder } from '../embeddings/QwenEmbedder.js';
+import { createEmbedder } from '../embeddings/TransformersEmbedder.js';
+import type { Embedder } from '../embeddings/types.js';
 import { ConfidenceAnalyzer, ConfidenceScore } from './ConfidenceAnalyzer.js';
 import { ContextBuilder } from './ContextBuilder.js';
 import { TokenCounter } from './TokenCounter.js';
@@ -32,7 +33,7 @@ export interface RetrievalResult {
 
 export class AdaptiveRetriever {
   private walker: GraphWalker;
-  private embedder: QwenEmbedder;
+  private embedder: Embedder;
   private confidenceAnalyzer: ConfidenceAnalyzer;
   private contextBuilder: ContextBuilder;
   private tokenCounter: TokenCounter;
@@ -42,7 +43,7 @@ export class AdaptiveRetriever {
     private tiers: RetrievalTier[] = DEFAULT_TIERS
   ) {
     this.walker = new GraphWalker(graph);
-    this.embedder = new QwenEmbedder();
+    this.embedder = createEmbedder();
     this.confidenceAnalyzer = new ConfidenceAnalyzer();
     this.contextBuilder = new ContextBuilder();
     this.tokenCounter = new TokenCounter();
@@ -146,7 +147,11 @@ export class AdaptiveRetriever {
     for (const node of nodes) {
       if (!node.embedding) {
         // Embed node content if not already embedded
-        node.embedding = await this.embedder.embed(node.content);
+        const source =
+          typeof node.metadata?.embeddingText === 'string'
+            ? (node.metadata.embeddingText as string)
+            : node.content;
+        node.embedding = await this.embedder.embed(source);
       }
       
       const score = this.cosineSimilarity(queryEmbedding, node.embedding);

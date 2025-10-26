@@ -1,11 +1,11 @@
-﻿import { QwenEmbedder } from '../embeddings/QwenEmbedder.js';
+import { createEmbedder } from '../embeddings/TransformersEmbedder.js';
 import { TargetResolver } from '../retrieval/TargetResolver.js';
 import { DependencyAwareRetriever } from '../retrieval/DependencyAwareRetriever.js';
 import { TransformersCrossEncoder } from '../retrieval/CrossEncoder.js';
 import type { RetrievalComponentFactory, RetrievalComponentOptions } from './LangGraphPipeline.js';
 
 export function createDefaultRetrievalFactory(): RetrievalComponentFactory {
-  const embedder = new QwenEmbedder(process.env.CODEFLOW_EMBED_MODEL);
+  const embedder = createEmbedder({ model: process.env.CODEFLOW_EMBED_MODEL ?? undefined });
   let embedderReady = false;
 
   const ensureEmbedder = async () => {
@@ -31,9 +31,11 @@ export function createDefaultRetrievalFactory(): RetrievalComponentFactory {
     await ensureEmbedder();
 
     const resolver = new TargetResolver(graph, embedder, {
-      crossEncoder: options.useCrossEncoder ? new TransformersCrossEncoder({
-        model: process.env.CODEFLOW_CROSS_ENCODER_MODEL || undefined,
-      }) : undefined,
+      crossEncoder: options.useCrossEncoder
+        ? new TransformersCrossEncoder({
+            model: process.env.CODEFLOW_CROSS_ENCODER_MODEL || undefined,
+          })
+        : undefined,
     });
 
     const retriever = new DependencyAwareRetriever(graph, { embedder });

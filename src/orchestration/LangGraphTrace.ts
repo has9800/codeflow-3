@@ -14,7 +14,7 @@ export class LangGraphTrace {
 
   async record<T>(
     node: string,
-    fn: () => Promise<T>,
+    fn: () => Promise<T> | T,
     metadata?: (result: T) => Record<string, unknown>
   ): Promise<T> {
     const started = Date.now();

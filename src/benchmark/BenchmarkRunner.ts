@@ -27,6 +27,9 @@ export class BenchmarkRunner {
       if (!evaluation) {
         throw new Error(`Pipeline returned no evaluation for task ${task.id}`);
       }
+      if (!resolution) {
+        throw new Error(`Pipeline returned no resolution for task ${task.id}`);
+      }
 
       const metrics = evaluation.metrics;
       const topCandidatePaths = new Set(resolution.candidates.map(candidate => candidate.path));

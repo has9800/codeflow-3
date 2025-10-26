@@ -1,6 +1,7 @@
 import { CodeGraph, GraphNode } from '../graph/CodeGraph.js';
 import { GraphWalker } from '../graph/GraphWalker.js';
-import { QwenEmbedder } from '../embeddings/QwenEmbedder.js';
+import { createEmbedder } from '../embeddings/TransformersEmbedder.js';
+import type { Embedder } from '../embeddings/types.js';
 import { TextSearchEngine } from './TextSearchEngine.js';
 import { TokenCounter } from './TokenCounter.js';
 import { TargetResolver } from './TargetResolver.js';
@@ -50,11 +51,6 @@ interface ScoredNode {
   score: number;
 }
 
-interface Embedder {
-  initialize(): Promise<void>;
-  embed(text: string): Promise<number[]>;
-}
-
 class NoopEmbedder implements Embedder {
   async initialize(): Promise<void> {
     // Intentionally empty
@@ -83,7 +79,7 @@ export class DependencyAwareRetriever {
     }
   ) {
     this.walker = deps?.walker ?? new GraphWalker(graph);
-    this.embedder = deps?.embedder ?? new QwenEmbedder();
+    this.embedder = deps?.embedder ?? createEmbedder();
     this.textSearch = deps?.textSearch ?? new TextSearchEngine();
     this.tokenCounter = deps?.tokenCounter ?? new TokenCounter();
     this.targetResolver = new TargetResolver(graph, this.embedder);
@@ -496,9 +492,13 @@ export class DependencyAwareRetriever {
     
     for (const node of nodes) {
       if (!node.embedding) {
-        node.embedding = await this.embedder.embed(node.content);
+        const source =
+          typeof node.metadata?.embeddingText === 'string'
+            ? (node.metadata.embeddingText as string)
+            : node.content;
+        node.embedding = await this.embedder.embed(source);
       }
-      
+
       const score = this.cosineSimilarity(queryEmbedding, node.embedding);
       scored.push({ node, score });
     }
