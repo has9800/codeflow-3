@@ -7,6 +7,9 @@ import { TokenCounter } from './TokenCounter.js';
 import { TargetResolver } from './TargetResolver.js';
 import type { CandidateSourceScores, TargetCandidate } from './TargetResolver.js';
 
+const NODE_SNIPPET_MAX_LINES = 80;
+const NODE_SNIPPET_MAX_CHARS = 1200;
+
 export interface ContextTelemetry {
   targetResolution: {
     primaryPath?: string;
@@ -828,13 +831,25 @@ export class DependencyAwareRetriever {
   }
 
   private formatNode(node: GraphNode): string {
+    const snippet = this.formatNodeContent(node);
     return `## ${node.type}: ${node.name}
 File: ${node.path}
 Lines: ${node.startLine}-${node.endLine}
 
 \`\`\`
-${node.content}
+${snippet}
 \`\`\``;
+  }
+
+  private formatNodeContent(node: GraphNode): string {
+    const raw = typeof node.content === 'string' ? node.content : String(node.content ?? '');
+    const lines = raw.split(/\r?\n/);
+    const sliced = lines.slice(0, NODE_SNIPPET_MAX_LINES);
+    let snippet = sliced.join('\n');
+    if (snippet.length > NODE_SNIPPET_MAX_CHARS) {
+      snippet = `${snippet.slice(0, NODE_SNIPPET_MAX_CHARS)}\n...`;
+    }
+    return snippet.trimEnd();
   }
 
   private estimateTokens(nodes: GraphNode[]): number {
@@ -844,7 +859,7 @@ ${node.content}
 
   private estimateFullContext(filePath: string): number {
     const nodes = this.graph.getNodesByPath(filePath);
-    const content = nodes.map(n => n.content).join('\n');
+    const content = nodes.map(n => this.formatNodeContent(n)).join('\n');
     return this.tokenCounter.count(content) * 3; // Multiply by 3 for typical full-context overhead
   }
 }
